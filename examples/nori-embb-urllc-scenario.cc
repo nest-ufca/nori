@@ -194,8 +194,16 @@ int main(int argc, char* argv[])
     };
     std::map<std::string, TrafficProfile> trafficProfiles;
 
-    // Caminho correto do arquivo de configuração (ajuste conforme a sua árvore de diretórios)
-    std::ifstream configFile("/home/openran-br/ns-3-dev/contrib/nori/examples/config.json");
+    std::string configFilePath = "contrib/nori/examples/config.json";
+    bool enableRanSlicing = true;
+
+    CommandLine cmd;
+    cmd.AddValue("configFile", "Path to the scenario configuration file", configFilePath);
+    cmd.AddValue("enableRanSlicing", "Enable RAN Slicing with RL scheduler", enableRanSlicing);
+    cmd.AddValue("ipE2TermRic", "Ip address of the E2 termination", ipE2TermRic);
+    cmd.Parse(argc, argv);
+    // Load the scenario configuration after parsing CLI options so the path is portable.
+    std::ifstream configFile(configFilePath);
     if (configFile.is_open()) {
         nlohmann::json configJson;
         configFile >> configJson;
@@ -284,7 +292,7 @@ int main(int argc, char* argv[])
         NS_LOG_INFO("Total number of UEs (from slice configuration): " << ueNum);
 
     }else {
-        NS_LOG_ERROR("Could not open configuration file.");
+        NS_FATAL_ERROR("Could not open configuration file: " << configFilePath);
     }
 
 
@@ -293,15 +301,6 @@ int main(int argc, char* argv[])
     std::vector<std::string> ueSliceTrafficType(ueNum, "");
 
     GlobalValue::Bind("SimulatorImplementationType", StringValue("ns3::RealtimeSimulatorImpl"));
-
-    // Enable/disable RAN slicing with RL scheduler
-    bool enableRanSlicing = true;
-    bool enablenori = false;
-    
-    CommandLine cmd;
-    cmd.AddValue("enableRanSlicing", "Enable RAN Slicing with RL scheduler", enableRanSlicing);
-    cmd.AddValue("ipE2TermRic", "Ip address of the E2 termination", ipE2TermRic);
-    cmd.Parse(argc, argv);
 
     Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
 
