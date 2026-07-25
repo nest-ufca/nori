@@ -8,6 +8,8 @@
 #include "ns3/mobility-module.h"
 #include "ns3/network-module.h"
 #include "ns3/nr-module.h"
+#include "ns3/nr-rl-mac-scheduler-ofdma.h"
+#include "ns3/ric-control-message.h"
 #include "ns3/point-to-point-module.h"
 #include "ns3/nori-slicing-helper.h"
 #include <nlohmann/json.hpp>
@@ -20,10 +22,47 @@
 #include <numeric>
 #include <cstdint>
 
+#include <set>
+#include <algorithm>
 
 using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("nori-embb-urllc-scenario");
+
+/**
+ * Apply locally generated slice quotas to every configured gNB.
+ *
+ * This bypasses E2SM-RC and is intended to validate the scheduler
+ * independently from the RIC/xApp control path.
+ */
+void
+ApplyLocalSliceQuotas(
+    NetDeviceContainer gNbDevs,
+    std::vector<RicControlMessage::SlicePRBQuota> quotas)
+{
+    NS_ABORT_MSG_IF(quotas.empty(), "Local slice quota list is empty");
+
+    std::cout << "[LOCAL QUOTA] Applying " << quotas.size()
+              << " slice quotas at t=" << Simulator::Now().GetSeconds()
+              << "s" << std::endl;
+
+    for (uint32_t gNbIdx = 0; gNbIdx < gNbDevs.GetN(); ++gNbIdx)
+    {
+        auto gNbDevice = DynamicCast<NrGnbNetDevice>(gNbDevs.Get(gNbIdx));
+
+        NS_ABORT_MSG_UNLESS(gNbDevice,
+                            "Could not cast device to NrGnbNetDevice");
+
+        auto scheduler =
+            DynamicCast<NrRLMacSchedulerOfdma>(gNbDevice->GetScheduler(0));
+
+        NS_ABORT_MSG_UNLESS(
+            scheduler,
+            "Local slice quotas require NrRLMacSchedulerOfdma");
+
+        scheduler->SetSlicingParameters(quotas);
+    }
+}
 
 // Função auxiliar para imprimir estatísticas periódicas por UE
 void PrintPeriodicStats(Ptr<FlowMonitor> monitor,
@@ -197,6 +236,10 @@ int main(int argc, char* argv[])
     std::string configFilePath = "contrib/nori/examples/config.json";
     bool enableRanSlicing = true;
 
+    bool enableLocalPrbQuotas = false;
+    double localQuotaApplyTime = 1.1;
+    std::vector<RicControlMessage::SlicePRBQuota> localPrbQuotas;
+
     CommandLine cmd;
     cmd.AddValue("configFile", "Path to the scenario configuration file", configFilePath);
     cmd.AddValue("enableRanSlicing", "Enable RAN Slicing with RL scheduler", enableRanSlicing);
@@ -288,6 +331,90 @@ int main(int argc, char* argv[])
                          << " configured SST from JSON: " << static_cast<uint32_t>(sst));
         }
 
+        if (configJson.contains("localPrbQuotas"))
+        {
+            const auto& quotaConfig = configJson["localPrbQuotas"];
+
+            NS_ABORT_MSG_UNLESS(quotaConfig.is_object(),
+                                "localPrbQuotas must be a JSON object");
+
+            enableLocalPrbQuotas = quotaConfig.value("enabled", false);
+            localQuotaApplyTime = quotaConfig.value("applyTime", 1.1);
+
+            if (enableLocalPrbQuotas)
+            {
+                NS_ABORT_MSG_UNLESS(
+                    enableRanSlicing,
+                    "Local PRB quotas require enableRanSlicing=true");
+
+                NS_ABORT_MSG_UNLESS(
+                    localQuotaApplyTime > 1.0 && localQuotaApplyTime < simTime,
+                    "localPrbQuotas.applyTime must be after slice mapping at 1.0 s "
+                    "and before the end of the simulation");
+
+                NS_ABORT_MSG_UNLESS(
+                    quotaConfig.contains("quotas") &&
+                        quotaConfig["quotas"].is_array(),
+                    "localPrbQuotas.quotas must be a JSON array");
+
+                std::set<uint32_t> configuredSsts;
+                uint32_t totalDedicated = 0;
+                uint32_t totalMinimum = 0;
+
+                for (const auto& quotaJson : quotaConfig["quotas"])
+                {
+                    NS_ABORT_MSG_UNLESS(quotaJson.is_object(),
+                                        "Each local quota must be a JSON object");
+
+                    uint32_t sliceId = quotaJson.value("sliceId", 0u);
+                    long dedicated = quotaJson.value("dedicated", -1L);
+                    long minimum = quotaJson.value("min", -1L);
+                    long maximum = quotaJson.value("max", -1L);
+
+                    NS_ABORT_MSG_UNLESS(
+                        sliceId > 0 && sliceId <= 255,
+                        "Quota sliceId must be a valid SST in the range 1..255");
+
+                    NS_ABORT_MSG_UNLESS(
+                        std::find(sstPerSlice.begin(),
+                                sstPerSlice.end(),
+                                static_cast<uint8_t>(sliceId)) != sstPerSlice.end(),
+                        "Quota refers to an SST that is not configured in SstPerSlice");
+
+                    NS_ABORT_MSG_UNLESS(
+                        configuredSsts.insert(sliceId).second,
+                        "Duplicate SST in localPrbQuotas");
+
+                    NS_ABORT_MSG_UNLESS(
+                        dedicated >= 0 && dedicated <= minimum &&
+                            minimum <= maximum && maximum <= 100,
+                        "Quota must satisfy 0 <= dedicated <= min <= max <= 100");
+
+                    RicControlMessage::SlicePRBQuota quota;
+                    quota.sliceId = sliceId;
+                    quota.dedicatePRBRatio = dedicated;
+                    quota.minPRBRatio = minimum;
+                    quota.maxPRBRatio = maximum;
+
+                    localPrbQuotas.push_back(quota);
+
+                    totalDedicated += static_cast<uint32_t>(dedicated);
+                    totalMinimum += static_cast<uint32_t>(minimum);
+                }
+
+                NS_ABORT_MSG_UNLESS(
+                    localPrbQuotas.size() == sstPerSlice.size(),
+                    "A local quota must be provided for every configured SST");
+
+                NS_ABORT_MSG_UNLESS(
+                    totalDedicated <= 100,
+                    "The sum of dedicated quotas cannot exceed 100");
+
+                NS_ABORT_MSG_UNLESS(
+                    totalMinimum <= 100,
+                    "The sum of minimum quotas cannot exceed 100");
+            }
+        }
         ueNum = std::accumulate(uesPerSlice.begin(), uesPerSlice.end(), 0);
         NS_LOG_INFO("Total number of UEs (from slice configuration): " << ueNum);
 
@@ -428,6 +555,15 @@ int main(int argc, char* argv[])
                                             sstPerSlice,
                                             gNbDevs,
                                             ueDevs);
+
+    if (enableLocalPrbQuotas)
+    {
+        Simulator::Schedule(
+            Seconds(localQuotaApplyTime),
+            [gNbDevs, localPrbQuotas]() {
+                ApplyLocalSliceQuotas(gNbDevs, localPrbQuotas);
+            });
+    }
 
     // Connect remoteHost to PGW via P2P link
     PointToPointHelper p2ph;
