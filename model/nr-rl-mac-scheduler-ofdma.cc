@@ -22,9 +22,17 @@ NS_OBJECT_ENSURE_REGISTERED(NrRLMacSchedulerOfdma);
 TypeId
 NrRLMacSchedulerOfdma::GetTypeId()
 {
-    static TypeId tid = TypeId("ns3::NrRLMacSchedulerOfdma")
-                            .SetParent<NrMacSchedulerOfdmaRR>()
-                            .AddConstructor<NrRLMacSchedulerOfdma>()
+static TypeId tid =
+    TypeId("ns3::NrRLMacSchedulerOfdma")
+        .SetParent<NrMacSchedulerOfdmaRR>()
+        .AddConstructor<NrRLMacSchedulerOfdma>()
+        .AddTraceSource(
+            "SliceRbgAllocation",
+            "Per-slice RBG scheduling units assigned during one DL "
+            "allocation invocation",
+            MakeTraceSourceAccessor(
+                &NrRLMacSchedulerOfdma::m_sliceRbgAllocationTrace),
+            "ns3::NrRLMacSchedulerOfdma::SliceRbgAllocationTracedCallback")
         //.AddAttribute("NumberSlices",
         //              "Number of slices",
         //              UintegerValue(1),
@@ -118,6 +126,9 @@ NrRLMacSchedulerOfdma::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeD
     GetSecond GetUeVector;
     BeamSymbolMap symPerBeam = GetSymPerBeam(symAvail, activeDl);
 
+    std::vector<uint32_t> allocatedRbgPerSlice(m_numberSlices, 0);
+    uint32_t totalAvailableRbg = 0;
+
     // RAN slicing addition
     std::vector<uint32_t> minRbPerSlicesOnly(m_minRbPercSlices.size());
     std::vector<uint32_t> maxRbPerSlicesOnly(m_maxRbPercSlices.size());
@@ -139,6 +150,7 @@ NrRLMacSchedulerOfdma::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeD
                                  ? std::count(dlNotchedRBGsMask.begin(), dlNotchedRBGsMask.end(), 1)
                                  : GetBandwidthInRbg();
         uint32_t total_resources = resources;
+        totalAvailableRbg += total_resources;
         NS_ASSERT(resources > 0);
 
         // RAN slicing addition
@@ -244,12 +256,15 @@ NrRLMacSchedulerOfdma::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeD
                         GetUe(*schedInfoIt)->m_dlSym = beamSym;
                         assigned.m_sym = beamSym;
 
-                        slicesResource -=
-                            1; // Resources are RBG, so they do not consider the beamSym
+                        slicesResource -= 1; // One frequency-domain RBG was assigned.
 
-                        if (allocProcess !=
-                            0) // If dedicated(allocProcess=0), then do not update the resources yet
+                        if (allocProcess != 0)
+                        {
+                            // Dedicated resources are removed collectively after the dedicated phase.
                             resources -= 1;
+                        }
+
+                        allocatedRbgPerSlice[sliceIdx] += 1;
 
                         // Update metrics
                         NS_LOG_DEBUG("Assigned " << rbgAssignable << " DL RBG, spanned over "
@@ -297,6 +312,24 @@ NrRLMacSchedulerOfdma::AssignDLRBG(uint32_t symAvail, const ActiveUeMap& activeD
                                   << " DL Sym: " << GetUe(ue)->m_dlSym);
             }
         }
+    }
+
+    for (uint32_t sliceIdx = 0; sliceIdx < m_numberSlices; ++sliceIdx)
+    {
+        uint8_t sst = 0;
+
+        if (!m_sliceUeRnti[sliceIdx].empty())
+        {
+            uint16_t rnti =
+                static_cast<uint16_t>(m_sliceUeRnti[sliceIdx].front());
+
+            sst = NoriSlicingHelper::GetSstForRnti(rnti);
+        }
+
+        m_sliceRbgAllocationTrace(sliceIdx,
+                                  sst,
+                                  allocatedRbgPerSlice[sliceIdx],
+                                  totalAvailableRbg);
     }
     return symPerBeam;
 }

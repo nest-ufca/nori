@@ -7,6 +7,7 @@
 #include "ns3/nr-mac-scheduler-ofdma-rr.h"
 #include "ns3/nr-mac-scheduler-ofdma.h"
 #include "ns3/ric-control-message.h"
+#include "ns3/traced-callback.h"
 #include "ns3/traced-value.h"
 
 namespace ns3
@@ -53,7 +54,18 @@ class NrRLMacSchedulerOfdma : public NrMacSchedulerOfdmaRR
     void SetSlicingParameters(const std::vector<RicControlMessage::SlicePRBQuota>& quotas);
     
     void SetSliceUeMapping(uint32_t numSlices, const std::vector<std::vector<uint32_t>>& sliceUeRnti);
-  
+
+    /**
+     * Trace signature for per-slice DL RBG allocation.
+     *
+     * Arguments: internal slice index, SST, allocated RBG scheduling
+     * units, and total available RBG scheduling units.
+     */
+    typedef void (*SliceRbgAllocationTracedCallback)(uint32_t sliceIdx,
+                                                     uint8_t sst,
+                                                     uint32_t allocatedRbg,
+                                                     uint32_t availableRbg);
+
   protected:
     /**
      * @brief Create an UE representation aware of RAN slicing (SST lookup).
@@ -75,5 +87,7 @@ class NrRLMacSchedulerOfdma : public NrMacSchedulerOfdmaRR
     std::vector<std::vector<uint32_t>> m_sliceUeRnti; //!< UE RNTI per slice
 
     TracedValue<uint32_t> m_tracedValueSymPerBeam;
+
+    mutable TracedCallback<uint32_t, uint8_t, uint32_t, uint32_t> m_sliceRbgAllocationTrace;
 };
 } // namespace ns3

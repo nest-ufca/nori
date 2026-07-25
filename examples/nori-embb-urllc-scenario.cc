@@ -24,6 +24,7 @@
 
 #include <set>
 #include <algorithm>
+#include <fstream>
 
 using namespace ns3;
 
@@ -62,6 +63,27 @@ ApplyLocalSliceQuotas(
 
         scheduler->SetSlicingParameters(quotas);
     }
+}
+
+void
+WriteSliceRbgAllocation(std::ofstream* output,
+                        uint32_t gNbIdx,
+                        uint8_t bwpId,
+                        uint32_t sliceIdx,
+                        uint8_t sst,
+                        uint32_t allocatedRbg,
+                        uint32_t availableRbg)
+{
+    NS_ASSERT(output);
+    NS_ASSERT(output->is_open());
+
+    *output << Simulator::Now().GetNanoSeconds() << ","
+            << gNbIdx << ","
+            << static_cast<uint32_t>(bwpId) << ","
+            << sliceIdx << ","
+            << static_cast<uint32_t>(sst) << ","
+            << allocatedRbg << ","
+            << availableRbg << "\n";
 }
 
 // Função auxiliar para imprimir estatísticas periódicas por UE
@@ -235,6 +257,8 @@ int main(int argc, char* argv[])
 
     std::string configFilePath = "contrib/nori/examples/config.json";
     bool enableRanSlicing = true;
+    std::string rbgTraceFilePath;
+    std::ofstream rbgTraceStream;
 
     bool enableLocalPrbQuotas = false;
     double localQuotaApplyTime = 1.1;
@@ -244,6 +268,9 @@ int main(int argc, char* argv[])
     cmd.AddValue("configFile", "Path to the scenario configuration file", configFilePath);
     cmd.AddValue("enableRanSlicing", "Enable RAN Slicing with RL scheduler", enableRanSlicing);
     cmd.AddValue("ipE2TermRic", "Ip address of the E2 termination", ipE2TermRic);
+    cmd.AddValue("rbgTraceFile",
+                 "CSV output path for per-slice RBG allocation; empty disables the trace",
+                 rbgTraceFilePath);
     cmd.Parse(argc, argv);
     // Load the scenario configuration after parsing CLI options so the path is portable.
     std::ifstream configFile(configFilePath);
@@ -541,6 +568,53 @@ int main(int argc, char* argv[])
     NetDeviceContainer gNbDevs = nrHelper->InstallGnbDevice(gNbNodes, allBwps);
     NetDeviceContainer ueDevs = nrHelper->InstallUeDevice(ueNodes, allBwps);
 
+    if (!rbgTraceFilePath.empty())
+    {
+        NS_ABORT_MSG_UNLESS(
+            enableRanSlicing,
+            "RBG trace requires enableRanSlicing=true");
+
+        rbgTraceStream.open(rbgTraceFilePath,
+                            std::ios::out | std::ios::trunc);
+
+        NS_ABORT_MSG_UNLESS(
+            rbgTraceStream.is_open(),
+            "Could not open RBG trace file: " << rbgTraceFilePath);
+
+        rbgTraceStream
+            << "time_ns,gnb_index,bwp_id,slice_index,sst,"
+            "allocated_rbg,available_rbg\n";
+
+        for (uint32_t gNbIdx = 0; gNbIdx < gNbDevs.GetN(); ++gNbIdx)
+        {
+            auto gNbDevice =
+                DynamicCast<NrGnbNetDevice>(gNbDevs.Get(gNbIdx));
+
+            NS_ABORT_MSG_UNLESS(gNbDevice,
+                                "Could not cast device to NrGnbNetDevice");
+
+            constexpr uint8_t bwpId = 0;
+
+            auto scheduler =
+                DynamicCast<NrRLMacSchedulerOfdma>(
+                    gNbDevice->GetScheduler(bwpId));
+
+            NS_ABORT_MSG_UNLESS(
+                scheduler,
+                "RBG trace requires NrRLMacSchedulerOfdma");
+
+            bool connected = scheduler->TraceConnectWithoutContext(
+                "SliceRbgAllocation",
+                MakeBoundCallback(&WriteSliceRbgAllocation,
+                                &rbgTraceStream,
+                                gNbIdx,
+                                bwpId));
+
+            NS_ABORT_MSG_UNLESS(
+                connected,
+                "Could not connect SliceRbgAllocation trace");
+        }
+    }
     // Enable E2 support on gNBs
     // auto e2 = CreateObject<E2TermHelper>();
     // e2->SetAttribute("E2TermIp", StringValue(ipE2TermRic));
@@ -749,6 +823,10 @@ int main(int argc, char* argv[])
     // Run
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
+    if (rbgTraceStream.is_open())
+    {
+        rbgTraceStream.close();
+    }
 
     // Post-simulation analysis
     monitor->CheckForLostPackets();
