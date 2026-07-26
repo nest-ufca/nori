@@ -4,6 +4,7 @@ set(base_examples
     nori-mimo-demo
     nori-simple-rl-sched
     nori-embb-urllc-scenario
+    nest-embb-urllc-slicing
 )
 
 foreach(

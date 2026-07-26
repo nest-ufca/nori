@@ -8,6 +8,8 @@
 #include "ns3/mobility-module.h"
 #include "ns3/network-module.h"
 #include "ns3/nr-module.h"
+#include "ns3/nr-rl-mac-scheduler-ofdma.h"
+#include "ns3/ric-control-message.h"
 #include "ns3/point-to-point-module.h"
 #include "ns3/nori-slicing-helper.h"
 #include <nlohmann/json.hpp>
@@ -20,10 +22,169 @@
 #include <numeric>
 #include <cstdint>
 
+#include <set>
+#include <algorithm>
+#include <fstream>
 
 using namespace ns3;
 
-NS_LOG_COMPONENT_DEFINE("nori-embb-urllc-scenario");
+NS_LOG_COMPONENT_DEFINE("nest-embb-urllc-slicing");
+
+/**
+ * Apply locally generated slice quotas to every configured gNB.
+ *
+ * This bypasses E2SM-RC and is intended to validate the scheduler
+ * independently from the RIC/xApp control path.
+ */
+void
+ApplyLocalSliceQuotas(
+    NetDeviceContainer gNbDevs,
+    std::vector<RicControlMessage::SlicePRBQuota> quotas)
+{
+    NS_ABORT_MSG_IF(quotas.empty(), "Local slice quota list is empty");
+
+    std::cout << "[LOCAL QUOTA] Applying " << quotas.size()
+              << " slice quotas at t=" << Simulator::Now().GetSeconds()
+              << "s" << std::endl;
+
+    for (uint32_t gNbIdx = 0; gNbIdx < gNbDevs.GetN(); ++gNbIdx)
+    {
+        auto gNbDevice = DynamicCast<NrGnbNetDevice>(gNbDevs.Get(gNbIdx));
+
+        NS_ABORT_MSG_UNLESS(gNbDevice,
+                            "Could not cast device to NrGnbNetDevice");
+
+        auto scheduler =
+            DynamicCast<NrRLMacSchedulerOfdma>(gNbDevice->GetScheduler(0));
+
+        NS_ABORT_MSG_UNLESS(
+            scheduler,
+            "Local slice quotas require NrRLMacSchedulerOfdma");
+
+        scheduler->SetSlicingParameters(quotas);
+    }
+}
+
+/**
+ * One locally generated PRB quota action.
+ *
+ * The action is applied at applyTime and contains one quota entry for
+ * every SST configured in the scenario.
+ */
+struct LocalPrbQuotaAction
+{
+    double applyTime;
+    std::vector<RicControlMessage::SlicePRBQuota> quotas;
+};
+
+/**
+ * Parse and validate one local PRB quota action.
+ */
+LocalPrbQuotaAction
+ParseLocalPrbQuotaAction(const nlohmann::json& actionJson,
+                         const std::vector<uint8_t>& sstPerSlice,
+                         double simTime,
+                         const std::string& context)
+{
+    NS_ABORT_MSG_UNLESS(actionJson.is_object(),
+                        context + " must be a JSON object");
+
+    LocalPrbQuotaAction action;
+    action.applyTime = actionJson.value("applyTime", -1.0);
+
+    NS_ABORT_MSG_UNLESS(
+        action.applyTime > 1.0 && action.applyTime < simTime,
+        context + ".applyTime must be after slice mapping at 1.0 s "
+                  "and before the end of the simulation");
+
+    NS_ABORT_MSG_UNLESS(
+        actionJson.contains("quotas") &&
+            actionJson["quotas"].is_array(),
+        context + ".quotas must be a JSON array");
+
+    std::set<uint32_t> configuredSsts;
+    uint32_t totalDedicated = 0;
+    uint32_t totalMinimum = 0;
+
+    action.quotas.reserve(sstPerSlice.size());
+
+    for (const auto& quotaJson : actionJson["quotas"])
+    {
+        NS_ABORT_MSG_UNLESS(
+            quotaJson.is_object(),
+            context + " contains a quota that is not a JSON object");
+
+        uint32_t sliceId = quotaJson.value("sliceId", 0u);
+        long dedicated = quotaJson.value("dedicated", -1L);
+        long minimum = quotaJson.value("min", -1L);
+        long maximum = quotaJson.value("max", -1L);
+
+        NS_ABORT_MSG_UNLESS(
+            sliceId > 0 && sliceId <= 255,
+            context + " contains a sliceId outside the SST range 1..255");
+
+        NS_ABORT_MSG_UNLESS(
+            std::find(sstPerSlice.begin(),
+                      sstPerSlice.end(),
+                      static_cast<uint8_t>(sliceId)) != sstPerSlice.end(),
+            context + " refers to an SST that is not configured in SstPerSlice");
+
+        NS_ABORT_MSG_UNLESS(
+            configuredSsts.insert(sliceId).second,
+            context + " contains a duplicate SST");
+
+        NS_ABORT_MSG_UNLESS(
+            dedicated >= 0 && dedicated <= minimum &&
+                minimum <= maximum && maximum <= 100,
+            context + " must satisfy 0 <= dedicated <= min <= max <= 100");
+
+        RicControlMessage::SlicePRBQuota quota;
+        quota.sliceId = sliceId;
+        quota.dedicatePRBRatio = dedicated;
+        quota.minPRBRatio = minimum;
+        quota.maxPRBRatio = maximum;
+
+        action.quotas.push_back(quota);
+
+        totalDedicated += static_cast<uint32_t>(dedicated);
+        totalMinimum += static_cast<uint32_t>(minimum);
+    }
+
+    NS_ABORT_MSG_UNLESS(
+        action.quotas.size() == sstPerSlice.size(),
+        context + " must provide one quota for every configured SST");
+
+    NS_ABORT_MSG_UNLESS(
+        totalDedicated <= 100,
+        context + " has a dedicated quota sum greater than 100");
+
+    NS_ABORT_MSG_UNLESS(
+        totalMinimum <= 100,
+        context + " has a minimum quota sum greater than 100");
+
+    return action;
+}
+
+void
+WriteSliceRbgAllocation(std::ofstream* output,
+                        uint32_t gNbIdx,
+                        uint8_t bwpId,
+                        uint32_t sliceIdx,
+                        uint8_t sst,
+                        uint32_t allocatedRbg,
+                        uint32_t availableRbg)
+{
+    NS_ASSERT(output);
+    NS_ASSERT(output->is_open());
+
+    *output << Simulator::Now().GetNanoSeconds() << ","
+            << gNbIdx << ","
+            << static_cast<uint32_t>(bwpId) << ","
+            << sliceIdx << ","
+            << static_cast<uint32_t>(sst) << ","
+            << allocatedRbg << ","
+            << availableRbg << "\n";
+}
 
 // Função auxiliar para imprimir estatísticas periódicas por UE
 void PrintPeriodicStats(Ptr<FlowMonitor> monitor,
@@ -162,8 +323,8 @@ void PrintPeriodicStats(Ptr<FlowMonitor> monitor,
 }
 
 int main(int argc, char* argv[])
-{   
-    LogComponentEnable("nori-embb-urllc-scenario", LOG_LEVEL_INFO);
+{
+    LogComponentEnable("nest-embb-urllc-slicing", LOG_LEVEL_INFO);
     LogComponentEnable("E2Interface", LOG_LEVEL_INFO);
     LogComponentEnable("E2Termination", LOG_LEVEL_INFO);
     //LogComponentEnable("NrRLMacSchedulerOfdma", LOG_LEVEL_INFO);
@@ -196,11 +357,18 @@ int main(int argc, char* argv[])
 
     std::string configFilePath = "contrib/nori/examples/config.json";
     bool enableRanSlicing = true;
+    std::string rbgTraceFilePath;
+    std::ofstream rbgTraceStream;
+
+    std::vector<LocalPrbQuotaAction> localPrbQuotaActions;
 
     CommandLine cmd;
     cmd.AddValue("configFile", "Path to the scenario configuration file", configFilePath);
     cmd.AddValue("enableRanSlicing", "Enable RAN Slicing with RL scheduler", enableRanSlicing);
     cmd.AddValue("ipE2TermRic", "Ip address of the E2 termination", ipE2TermRic);
+    cmd.AddValue("rbgTraceFile",
+                 "CSV output path for per-slice RBG allocation; empty disables the trace",
+                 rbgTraceFilePath);
     cmd.Parse(argc, argv);
     // Load the scenario configuration after parsing CLI options so the path is portable.
     std::ifstream configFile(configFilePath);
@@ -261,33 +429,81 @@ int main(int argc, char* argv[])
 
             if (trafficProfiles.empty())
             {
-                NS_FATAL_ERROR("[nori-embb-urllc-scenario] No traffic profiles found in config.json under 'traffic'");
+                NS_FATAL_ERROR("[nest-embb-urllc-slicing] No traffic profiles found in config.json under 'traffic'");
             }
 
         // Expected format in config.json: "SstPerSlice": [1, 2]
         if (!configJson["slices"].contains("SstPerSlice")) {
-            NS_FATAL_ERROR("[nori-embb-urllc-scenario] Missing required field slices.SstPerSlice in config.json");
+            NS_FATAL_ERROR("[nest-embb-urllc-slicing] Missing required field slices.SstPerSlice in config.json");
         }
 
         std::vector<uint32_t> jsonSst = configJson["slices"]["SstPerSlice"];
 
         if (jsonSst.size() != uesPerSlice.size()) {
-            NS_FATAL_ERROR("[nori-embb-urllc-scenario] SstPerSlice size (" << jsonSst.size()
+            NS_FATAL_ERROR("[nest-embb-urllc-slicing] SstPerSlice size (" << jsonSst.size()
                            << ") does not match UesPerSlice size (" << uesPerSlice.size() << ")");
         }
 
         for (size_t i = 0; i < jsonSst.size(); ++i) {
             uint32_t v = jsonSst[i];
             if (v > 255) {
-                NS_FATAL_ERROR("[nori-embb-urllc-scenario] Invalid SST value " << v
+                NS_FATAL_ERROR("[nest-embb-urllc-slicing] Invalid SST value " << v
                                << " for slice " << i << " (expected 0..255)");
             }
             uint8_t sst = static_cast<uint8_t>(v);
             sstPerSlice.push_back(sst);
-            NS_LOG_INFO("[nori-embb-urllc-scenario] Slice " << i
+            NS_LOG_INFO("[nest-embb-urllc-slicing] Slice " << i
                          << " configured SST from JSON: " << static_cast<uint32_t>(sst));
         }
 
+        NS_ABORT_MSG_IF(
+            configJson.contains("localPrbQuotas"),
+            "localPrbQuotas is no longer supported; "
+            "use localPrbQuotaActions instead");
+
+        if (configJson.contains("localPrbQuotaActions"))
+        {
+            const auto& actionConfig =
+                configJson["localPrbQuotaActions"];
+
+            NS_ABORT_MSG_UNLESS(
+                actionConfig.is_array(),
+                "localPrbQuotaActions must be a JSON array");
+
+            NS_ABORT_MSG_UNLESS(
+                !actionConfig.empty(),
+                "localPrbQuotaActions cannot be empty");
+
+            NS_ABORT_MSG_UNLESS(
+                enableRanSlicing,
+                "Local PRB quota actions require enableRanSlicing=true");
+
+            double previousApplyTime = 1.0;
+
+            for (std::size_t actionIndex = 0;
+                actionIndex < actionConfig.size();
+                ++actionIndex)
+            {
+                const std::string context =
+                    "localPrbQuotaActions[" +
+                    std::to_string(actionIndex) +
+                    "]";
+
+                LocalPrbQuotaAction action =
+                    ParseLocalPrbQuotaAction(actionConfig[actionIndex],
+                                            sstPerSlice,
+                                            simTime,
+                                            context);
+
+                NS_ABORT_MSG_UNLESS(
+                    action.applyTime > previousApplyTime,
+                    "localPrbQuotaActions must be ordered by strictly "
+                    "increasing applyTime values");
+
+                previousApplyTime = action.applyTime;
+                localPrbQuotaActions.push_back(action);
+            }
+        }
         ueNum = std::accumulate(uesPerSlice.begin(), uesPerSlice.end(), 0);
         NS_LOG_INFO("Total number of UEs (from slice configuration): " << ueNum);
 
@@ -312,12 +528,12 @@ int main(int argc, char* argv[])
     nrHelper->SetUePhyAttribute("TxPower", DoubleValue(ueTxPower));
     //nrHelper->SetGnbPhyAttribute("DciProcessingDelay", TimeValue(MicroSeconds(1.0)));
     //nrHelper->SetUePhyAttribute("DciProcessingDelay", TimeValue(MicroSeconds(1.0)));
-    
+
     // Configurar scheduler: RL com slicing ou RoundRobin padrão
     std::string schedulerType = enableRanSlicing ? "ns3::NrRLMacSchedulerOfdma" : "ns3::NrMacSchedulerOfdmaRR";
     nrHelper->SetSchedulerTypeId(TypeId::LookupByName(schedulerType));
     NS_LOG_INFO("Scheduler selecionado: " << schedulerType);
-    
+
     // EPC helper
     Ptr<NrPointToPointEpcHelper> epcHelper = CreateObject<NrPointToPointEpcHelper>();
     nrHelper->SetEpcHelper(epcHelper);
@@ -414,6 +630,53 @@ int main(int argc, char* argv[])
     NetDeviceContainer gNbDevs = nrHelper->InstallGnbDevice(gNbNodes, allBwps);
     NetDeviceContainer ueDevs = nrHelper->InstallUeDevice(ueNodes, allBwps);
 
+    if (!rbgTraceFilePath.empty())
+    {
+        NS_ABORT_MSG_UNLESS(
+            enableRanSlicing,
+            "RBG trace requires enableRanSlicing=true");
+
+        rbgTraceStream.open(rbgTraceFilePath,
+                            std::ios::out | std::ios::trunc);
+
+        NS_ABORT_MSG_UNLESS(
+            rbgTraceStream.is_open(),
+            "Could not open RBG trace file: " << rbgTraceFilePath);
+
+        rbgTraceStream
+            << "time_ns,gnb_index,bwp_id,slice_index,sst,"
+            "allocated_rbg,available_rbg\n";
+
+        for (uint32_t gNbIdx = 0; gNbIdx < gNbDevs.GetN(); ++gNbIdx)
+        {
+            auto gNbDevice =
+                DynamicCast<NrGnbNetDevice>(gNbDevs.Get(gNbIdx));
+
+            NS_ABORT_MSG_UNLESS(gNbDevice,
+                                "Could not cast device to NrGnbNetDevice");
+
+            constexpr uint8_t bwpId = 0;
+
+            auto scheduler =
+                DynamicCast<NrRLMacSchedulerOfdma>(
+                    gNbDevice->GetScheduler(bwpId));
+
+            NS_ABORT_MSG_UNLESS(
+                scheduler,
+                "RBG trace requires NrRLMacSchedulerOfdma");
+
+            bool connected = scheduler->TraceConnectWithoutContext(
+                "SliceRbgAllocation",
+                MakeBoundCallback(&WriteSliceRbgAllocation,
+                                &rbgTraceStream,
+                                gNbIdx,
+                                bwpId));
+
+            NS_ABORT_MSG_UNLESS(
+                connected,
+                "Could not connect SliceRbgAllocation trace");
+        }
+    }
     // Enable E2 support on gNBs
     // auto e2 = CreateObject<E2TermHelper>();
     // e2->SetAttribute("E2TermIp", StringValue(ipE2TermRic));
@@ -428,6 +691,16 @@ int main(int argc, char* argv[])
                                             sstPerSlice,
                                             gNbDevs,
                                             ueDevs);
+
+    // Schedule every locally configured PRB quota action.
+    for (const auto& action : localPrbQuotaActions)
+    {
+        Simulator::Schedule(
+            Seconds(action.applyTime),
+            [gNbDevs, action]() {
+                ApplyLocalSliceQuotas(gNbDevs, action.quotas);
+            });
+    }
 
     // Connect remoteHost to PGW via P2P link
     PointToPointHelper p2ph;
@@ -518,10 +791,10 @@ int main(int argc, char* argv[])
     // Application logic per slice
     uint32_t currentUeIndex = 0;
 
-    for (size_t sliceId = 0; sliceId < uesPerSlice.size(); ++sliceId) 
+    for (size_t sliceId = 0; sliceId < uesPerSlice.size(); ++sliceId)
     {
         int countUes = uesPerSlice[sliceId];
-        
+
         // Traffic type per slice from configuration (fallback to first available profile)
         std::string trafficType = (sliceId < trafficTypes.size())
             ? trafficTypes[sliceId]
@@ -529,7 +802,7 @@ int main(int argc, char* argv[])
 
         NS_LOG_INFO("Slice " << sliceId << " configured with traffic type: " << trafficType);
 
-        for (int k = 0; k < countUes; ++k) 
+        for (int k = 0; k < countUes; ++k)
         {
             if (currentUeIndex >= ueNodes.GetN()) break;
 
@@ -559,16 +832,16 @@ int main(int argc, char* argv[])
             OnOffHelper trafficApp("ns3::UdpSocketFactory", InetSocketAddress(ueAddr, port));
             trafficApp.SetAttribute("DataRate", DataRateValue(DataRate(std::to_string((int)profile.dataRate) + "Mbps")));
             trafficApp.SetAttribute("PacketSize", UintegerValue(profile.packetSize));
-            
+
             std::string onTimeStr = "ns3::ExponentialRandomVariable[Mean=" + std::to_string(profile.onTime) + "]";
             std::string offTimeStr = "ns3::ExponentialRandomVariable[Mean=" + std::to_string(profile.offTime) + "]";
-            
+
             trafficApp.SetAttribute("OnTime", StringValue(onTimeStr));
             trafficApp.SetAttribute("OffTime", StringValue(offTimeStr));
             trafficApp.SetAttribute("StartTime", TimeValue(Seconds(0.1)));
-            
+
             ApplicationContainer sourceApps = trafficApp.Install(remoteHostContainer.Get(0));
-            
+
             sourceApps.Start(Seconds(2.0));
             sourceApps.Stop(Seconds(simTime));
 
@@ -583,7 +856,7 @@ int main(int argc, char* argv[])
     ApplicationContainer serverApps = echoServer.Install(remoteHostContainer.Get(0));
     serverApps.Start(Seconds(0.0));
     serverApps.Stop(Seconds(simTime));
-    
+
     UdpEchoClientHelper echoClient(remoteHostAddr, echoPort);
     echoClient.SetAttribute("MaxPackets", UintegerValue(1));
     echoClient.SetAttribute("Interval", TimeValue(Seconds(1.0)));
@@ -613,6 +886,10 @@ int main(int argc, char* argv[])
     // Run
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
+    if (rbgTraceStream.is_open())
+    {
+        rbgTraceStream.close();
+    }
 
     // Post-simulation analysis
     monitor->CheckForLostPackets();
@@ -625,29 +902,29 @@ int main(int argc, char* argv[])
     uint32_t ignoredFlows = 0; // Infrastructure flows (GTP/backhaul)
 
     std::map<FlowId, FlowMonitor::FlowStats> statsMap = monitor->GetFlowStats();
-    
+
     std::cout << "\n=== DEBUG: Total number of captured flows ===" << std::endl;
     std::cout << "Total flows: " << statsMap.size() << std::endl;
-    
+
     uint64_t totalTxPackets = 0, totalRxPackets = 0;
     for (const auto& it : statsMap)
     {
         FlowId flowId = it.first;
         const FlowMonitor::FlowStats& stats = it.second;
         Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(flowId);
-        std::cout << "  Flow " << flowId << ": " << t.sourceAddress << ":" << t.sourcePort 
-                  << " -> " << t.destinationAddress << ":" << t.destinationPort 
+        std::cout << "  Flow " << flowId << ": " << t.sourceAddress << ":" << t.sourcePort
+                  << " -> " << t.destinationAddress << ":" << t.destinationPort
                   << " (Tx: " << stats.txPackets << ", Rx: " << stats.rxPackets << ")" << std::endl;
         totalTxPackets += stats.txPackets;
         totalRxPackets += stats.rxPackets;
     }
     std::cout << "Total Tx: " << totalTxPackets << " | Total Rx: " << totalRxPackets << std::endl;
-    
+
     std::cout << "\n=== DIAGNOSTICS ===" << std::endl;
     std::cout << "If Total Tx = 0: OnOff apps did NOT send any packets" << std::endl;
     std::cout << "If Total Tx > 0 but Total Rx = 0: All packets were lost in the network" << std::endl;
     std::cout << "If Total Rx > 0: Flows are successfully traversing the network" << std::endl;
-    
+
     std::cout << "\n=== FLOW DETAILS ===" << std::endl;
 
     for (const auto& it : statsMap)
@@ -670,7 +947,7 @@ int main(int argc, char* argv[])
             {
                 double txDuration = stats.timeLastRxPacket.GetSeconds() - stats.timeFirstTxPacket.GetSeconds();
                 if (txDuration <= 0.0) txDuration = 1e-9;
-                
+
                 throughput = (stats.rxBytes * 8.0) / txDuration / 1e6; // Mbps
                 delay = (stats.delaySum.GetSeconds() / stats.rxPackets) * 1e3; // ms
                 lossRatio = (stats.txPackets > 0) ? ((double)(stats.txPackets - stats.rxPackets) / stats.txPackets) * 100.0 : 0.0;
@@ -742,16 +1019,16 @@ int main(int argc, char* argv[])
                       << ", slice " << ((sliceId >= 0) ? std::to_string(sliceId) : std::string("N/A"))
                       << "): " << t.sourceAddress << ":" << t.sourcePort
                       << " -> " << t.destinationAddress << ":" << t.destinationPort
-                      << " | T-put: " << std::fixed << std::setprecision(2) << throughput << " Mbps" 
-                      << " | Delay: " << delay << " ms" 
+                      << " | T-put: " << std::fixed << std::setprecision(2) << throughput << " Mbps"
+                      << " | Delay: " << delay << " ms"
                       << " | Loss: " << lossRatio << " %" << std::endl;
         }
         else
         {
             // Infrastructure flow (e.g., GTP/backhaul), ignored in UE statistics
             ignoredFlows++;
-            std::cout << "  (Ignored infrastructure flow: " << t.sourceAddress << ":" << t.sourcePort 
-                      << " -> " << t.destinationAddress << ":" << t.destinationPort 
+            std::cout << "  (Ignored infrastructure flow: " << t.sourceAddress << ":" << t.sourcePort
+                      << " -> " << t.destinationAddress << ":" << t.destinationPort
                       << ") Tx: " << stats.txPackets << " Rx: " << stats.rxPackets << std::endl;
         }
     }
@@ -761,18 +1038,18 @@ int main(int argc, char* argv[])
 
     if (embbFlows > 0)
     {
-        std::cout << "Average eMBB (" << embbFlows << " flows) - Throughput: " 
+        std::cout << "Average eMBB (" << embbFlows << " flows) - Throughput: "
               << (totalThroughputEmbB / embbFlows) << " Mbps; Delay: "
               << (totalDelayEmbB / embbFlows) << " ms" << std::endl;
     }
-    else 
+    else
     {
         std::cout << "No eMBB flow detected (check if app start time > RRC connection time)." << std::endl;
     }
 
     if (urllcFlows > 0)
     {
-        std::cout << "Average URLLC (" << urllcFlows << " flows) - Throughput: " 
+        std::cout << "Average URLLC (" << urllcFlows << " flows) - Throughput: "
               << (totalThroughputUrllc / urllcFlows) << " Mbps; Delay: "
               << (totalDelayUrllc / urllcFlows) << " ms" << std::endl;
     }
