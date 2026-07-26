@@ -654,7 +654,8 @@ int main(int argc, char* argv[])
             simTime,
             sliceMetricsInterval,
             &sliceMetricsState,
-            &sliceMetricsStream);
+            &sliceMetricsStream,
+            SliceWindowMetricsCallback{});
     }
 
     // Run

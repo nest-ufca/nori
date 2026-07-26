@@ -219,12 +219,16 @@ SampleSliceWindowMetrics(
     double simTime,
     double interval,
     SliceMetricsCollectorState* state,
-    std::ofstream* output)
+    std::ofstream* output,
+    SliceWindowMetricsCallback metricsCallback)
 {
     NS_ABORT_MSG_IF(interval <= 0.0,
                     "Slice metric interval must be greater than zero");
 
-    NS_ABORT_MSG_IF(output == nullptr || !output->is_open(),
+    NS_ABORT_MSG_IF(state == nullptr,
+                    "Slice metrics collector state is null");
+
+    NS_ABORT_MSG_IF(output != nullptr && !output->is_open(),
                     "Slice metric output stream is not open");
 
     const double sampleTime =
@@ -265,38 +269,49 @@ SampleSliceWindowMetrics(
             windowDuration <= 0.0,
             "Slice metric observation window has invalid duration");
 
-        for (const SliceWindowMetrics& metrics : sliceMetrics)
+        if (output != nullptr)
         {
-            const double offeredMbps =
-                metrics.txBytes * 8.0 /
-                windowDuration / 1e6;
+            for (const SliceWindowMetrics& metrics : sliceMetrics)
+            {
+                const double offeredMbps =
+                    metrics.txBytes * 8.0 /
+                    windowDuration / 1e6;
 
-            const double throughputMbps =
-                metrics.rxBytes * 8.0 /
-                windowDuration / 1e6;
+                const double throughputMbps =
+                    metrics.rxBytes * 8.0 /
+                    windowDuration / 1e6;
 
-            const double meanDelayMs =
-                metrics.rxPackets > 0
-                    ? metrics.delaySumSeconds /
-                        metrics.rxPackets * 1e3
-                    : 0.0;
+                const double meanDelayMs =
+                    metrics.rxPackets > 0
+                        ? metrics.delaySumSeconds /
+                            metrics.rxPackets * 1e3
+                        : 0.0;
 
-            *output << std::fixed << std::setprecision(6)
-                    << windowStart << ","
-                    << sampleTime << ","
-                    << windowDuration << ","
-                    << metrics.sliceIndex << ","
-                    << static_cast<uint32_t>(metrics.sst) << ","
-                    << metrics.txPackets << ","
-                    << metrics.rxPackets << ","
-                    << metrics.txBytes << ","
-                    << metrics.rxBytes << ","
-                    << offeredMbps << ","
-                    << throughputMbps << ","
-                    << meanDelayMs << "\n";
+                *output << std::fixed << std::setprecision(6)
+                        << windowStart << ","
+                        << sampleTime << ","
+                        << windowDuration << ","
+                        << metrics.sliceIndex << ","
+                        << static_cast<uint32_t>(metrics.sst) << ","
+                        << metrics.txPackets << ","
+                        << metrics.rxPackets << ","
+                        << metrics.txBytes << ","
+                        << metrics.rxBytes << ","
+                        << offeredMbps << ","
+                        << throughputMbps << ","
+                        << meanDelayMs << "\n";
+            }
+
+            output->flush();
         }
 
-        output->flush();
+        if (metricsCallback)
+        {
+            metricsCallback(
+                windowStart,
+                sampleTime,
+                sliceMetrics);
+        }
     }
 
     if (sampleTime + interval <= simTime + 1e-9)
@@ -315,7 +330,8 @@ SampleSliceWindowMetrics(
             simTime,
             interval,
             state,
-            output);
+            output,
+            metricsCallback);
     }
 }
 } // namespace ns3

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <map>
 #include <vector>
+#include <functional>
 
 namespace ns3
 {
@@ -51,6 +52,12 @@ struct SliceMetricsCollectorState
     std::vector<UeFlowCounters> previousUeCounters;
 };
 
+using SliceWindowMetricsCallback =
+    std::function<void(
+        double windowStart,
+        double windowEnd,
+        const std::vector<SliceWindowMetrics>& metrics)>;
+
 void WriteSliceRbgAllocation(std::ofstream* output,
                              uint32_t gNbIdx,
                              uint8_t bwpId,
@@ -89,7 +96,8 @@ void SampleSliceWindowMetrics(
     double simTime,
     double interval,
     SliceMetricsCollectorState* state,
-    std::ofstream* output);
+    std::ofstream* output,
+    SliceWindowMetricsCallback metricsCallback);
 
 } // namespace ns3
 
