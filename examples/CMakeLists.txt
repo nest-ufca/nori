@@ -25,6 +25,7 @@ build_lib_example(
     SOURCE_FILES nest-embb-urllc-slicing.cc
                  nest/slice-metrics-collector.cc
                  nest/slice-controller.cc
+                 nest/scenario-config.cc
     LIBRARIES_TO_LINK ${libnori}
                       ${libnr}
                       ${liblte}

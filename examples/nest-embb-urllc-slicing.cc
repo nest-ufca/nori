@@ -1,4 +1,5 @@
 // NR eMBB/URLLC scenario with EPC/PGW (end-to-end IP UE <-> remoteHost)
+#include "nest/scenario-config.h"
 #include "nest/slice-metrics-collector.h"
 #include "nest/slice-controller.h"
 #include "ns3/E2-term-helper.h"
@@ -14,7 +15,6 @@
 #include "ns3/ric-control-message.h"
 #include "ns3/point-to-point-module.h"
 #include "ns3/nori-slicing-helper.h"
-#include <nlohmann/json.hpp>
 
 #include <iomanip>
 #include <iostream>
@@ -27,6 +27,7 @@
 #include <set>
 #include <algorithm>
 #include <fstream>
+#include <memory>
 
 using namespace ns3;
 
@@ -39,34 +40,13 @@ int main(int argc, char* argv[])
     LogComponentEnable("E2Termination", LOG_LEVEL_INFO);
     //LogComponentEnable("NrRLMacSchedulerOfdma", LOG_LEVEL_INFO);
 
-    uint16_t gNbNum = 1;
-    uint16_t ueNum = 2;
-    double simTime = 10.0;
-    double interSiteDistance = 20.0;
-    double centralFrequency = 3.6e9;
-    double bandwidth = 100e6;
+    std::string configFilePath =
+        "contrib/nori/examples/config.json";
 
-    uint16_t numerology = 0;
-    double txPower = 0.0;
-    double ueTxPower = 0.0;
-
-    std::string ipE2TermRic = "10.244.0.188";
-
-    std::vector<int> uesPerSlice;
-    std::vector<uint8_t> sstPerSlice;
-    std::vector<std::string> trafficTypes;
-
-    // Per-traffic-type traffic parameters
-    struct TrafficProfile {
-        double dataRate;
-        uint16_t packetSize;
-        double onTime;
-        double offTime;
-    };
-    std::map<std::string, TrafficProfile> trafficProfiles;
-
-    std::string configFilePath = "contrib/nori/examples/config.json";
     bool enableRanSlicing = true;
+
+    std::string ipE2TermRic =
+        "10.244.0.188";
 
     std::string rbgTraceFilePath;
     std::ofstream rbgTraceStream;
@@ -78,18 +58,33 @@ int main(int argc, char* argv[])
     double trafficStartTime = 2.0;
     double sliceMetricsInterval = 0.1;
 
-    std::vector<LocalPrbQuotaAction> localPrbQuotaActions;
-
     CommandLine cmd;
-    cmd.AddValue("configFile", "Path to the scenario configuration file", configFilePath);
-    cmd.AddValue("enableRanSlicing", "Enable RAN Slicing with RL scheduler", enableRanSlicing);
-    cmd.AddValue("ipE2TermRic", "Ip address of the E2 termination", ipE2TermRic);
-    cmd.AddValue("rbgTraceFile",
-                 "CSV output path for per-slice RBG allocation; empty disables the trace",
-                 rbgTraceFilePath);
+
+    cmd.AddValue(
+        "configFile",
+        "Path to the scenario configuration file",
+        configFilePath);
+
+    cmd.AddValue(
+        "enableRanSlicing",
+        "Enable RAN Slicing with RL scheduler",
+        enableRanSlicing);
+
+    cmd.AddValue(
+        "ipE2TermRic",
+        "Ip address of the E2 termination",
+        ipE2TermRic);
+
+    cmd.AddValue(
+        "rbgTraceFile",
+        "CSV output path for per-slice RBG allocation; "
+        "empty disables the trace",
+        rbgTraceFilePath);
+
     cmd.AddValue(
         "sliceMetricsFile",
-        "CSV output path for per-slice window metrics; empty disables collection",
+        "CSV output path for per-slice window metrics; "
+        "empty disables collection",
         sliceMetricsFilePath);
 
     cmd.AddValue(
@@ -101,147 +96,58 @@ int main(int argc, char* argv[])
         "trafficStartTime",
         "Time at which downlink traffic sources start, in seconds",
         trafficStartTime);
+
     cmd.Parse(argc, argv);
-    // Load the scenario configuration after parsing CLI options so the path is portable.
-    std::ifstream configFile(configFilePath);
-    if (configFile.is_open()) {
-        nlohmann::json configJson;
-        configFile >> configJson;
-        configFile.close();
 
-        gNbNum = configJson["topology"].value("numGNb", gNbNum);
-        interSiteDistance = configJson["topology"].value("distance", interSiteDistance);
+    // Load and validate all JSON-controlled scenario parameters.
+    const NestScenarioConfig scenarioConfig =
+        LoadNestScenarioConfig(
+            configFilePath,
+            enableRanSlicing);
 
-        simTime = configJson["simulation"].value("duration", simTime);
+    const uint16_t gNbNum =
+        scenarioConfig.gNbNum;
 
-        numerology = configJson["NR"].value("numerology", numerology);
-        double bwMHz = configJson["NR"]["bandwidthMHz"].get<double>();
-        bandwidth = bwMHz * 1e6;
-        centralFrequency = configJson["NR"].value("centralFrequency", centralFrequency);
-        txPower = configJson["NR"].value("txPower", txPower);
-        ueTxPower = configJson["NR"].value("ueTxPower", ueTxPower);
+    const uint32_t ueNum =
+        scenarioConfig.ueNum;
 
-        std::vector<uint32_t> jsonSlices = configJson["slices"]["UesPerSlice"];
+    const double simTime =
+        scenarioConfig.simTime;
 
-        for (uint32_t& item : jsonSlices) {
-            NS_LOG_INFO("Number of UEs per slice: " << item);
-            uesPerSlice.push_back(static_cast<int>(item));
-        }
+    const double interSiteDistance =
+        scenarioConfig.interSiteDistance;
 
-        if (configJson["slices"].contains("trafficTypes")) {
-            trafficTypes = configJson["slices"]["trafficTypes"].get<std::vector<std::string>>();
-            for (size_t i = 0; i < trafficTypes.size(); ++i) {
-                NS_LOG_INFO("Slice " << i << " traffic type: " << trafficTypes[i]);
-            }
-        }
+    const double centralFrequency =
+        scenarioConfig.centralFrequency;
 
-            // Ler parâmetros de tráfego para cada tipo (aceita qualquer chave em "traffic")
-            if (configJson.contains("traffic") && configJson["traffic"].is_object())
-            {
-                for (auto& item : configJson["traffic"].items())
-                {
-                    const std::string trafficName = item.key();
-                    const auto& trafficConfig = item.value();
+    const double bandwidth =
+        scenarioConfig.bandwidth;
 
-                    if (!trafficConfig.is_object())
-                    {
-                        continue;
-                    }
+    const uint16_t numerology =
+        scenarioConfig.numerology;
 
-                    TrafficProfile profile;
-                    profile.dataRate = trafficConfig.value("bitrateMbps", 0.0);
-                    profile.packetSize = trafficConfig.value("packetSize", static_cast<uint16_t>(0));
-                    profile.onTime = trafficConfig.value("onTimeMean", 1.0);
-                    profile.offTime = trafficConfig.value("offTimeMean", 0.01);
-                    trafficProfiles[trafficName] = profile;
+    const double txPower =
+        scenarioConfig.txPower;
 
-                    NS_LOG_INFO("Traffic profile loaded: " << trafficName);
-                }
-            }
+    const double ueTxPower =
+        scenarioConfig.ueTxPower;
 
-            if (trafficProfiles.empty())
-            {
-                NS_FATAL_ERROR("[nest-embb-urllc-slicing] No traffic profiles found in config.json under 'traffic'");
-            }
+    const std::vector<int>& uesPerSlice =
+        scenarioConfig.uesPerSlice;
 
-        // Expected format in config.json: "SstPerSlice": [1, 2]
-        if (!configJson["slices"].contains("SstPerSlice")) {
-            NS_FATAL_ERROR("[nest-embb-urllc-slicing] Missing required field slices.SstPerSlice in config.json");
-        }
+    const std::vector<uint8_t>& sstPerSlice =
+        scenarioConfig.sstPerSlice;
 
-        std::vector<uint32_t> jsonSst = configJson["slices"]["SstPerSlice"];
+    const std::vector<std::string>& trafficTypes =
+        scenarioConfig.trafficTypes;
 
-        if (jsonSst.size() != uesPerSlice.size()) {
-            NS_FATAL_ERROR("[nest-embb-urllc-slicing] SstPerSlice size (" << jsonSst.size()
-                           << ") does not match UesPerSlice size (" << uesPerSlice.size() << ")");
-        }
+    const std::map<std::string, NestTrafficProfile>&
+        trafficProfiles =
+            scenarioConfig.trafficProfiles;
 
-        for (size_t i = 0; i < jsonSst.size(); ++i) {
-            uint32_t v = jsonSst[i];
-            if (v > 255) {
-                NS_FATAL_ERROR("[nest-embb-urllc-slicing] Invalid SST value " << v
-                               << " for slice " << i << " (expected 0..255)");
-            }
-            uint8_t sst = static_cast<uint8_t>(v);
-            sstPerSlice.push_back(sst);
-            NS_LOG_INFO("[nest-embb-urllc-slicing] Slice " << i
-                         << " configured SST from JSON: " << static_cast<uint32_t>(sst));
-        }
-
-        NS_ABORT_MSG_IF(
-            configJson.contains("localPrbQuotas"),
-            "localPrbQuotas is no longer supported; "
-            "use localPrbQuotaActions instead");
-
-        if (configJson.contains("localPrbQuotaActions"))
-        {
-            const auto& actionConfig =
-                configJson["localPrbQuotaActions"];
-
-            NS_ABORT_MSG_UNLESS(
-                actionConfig.is_array(),
-                "localPrbQuotaActions must be a JSON array");
-
-            NS_ABORT_MSG_UNLESS(
-                !actionConfig.empty(),
-                "localPrbQuotaActions cannot be empty");
-
-            NS_ABORT_MSG_UNLESS(
-                enableRanSlicing,
-                "Local PRB quota actions require enableRanSlicing=true");
-
-            double previousApplyTime = 1.0;
-
-            for (std::size_t actionIndex = 0;
-                actionIndex < actionConfig.size();
-                ++actionIndex)
-            {
-                const std::string context =
-                    "localPrbQuotaActions[" +
-                    std::to_string(actionIndex) +
-                    "]";
-
-                LocalPrbQuotaAction action =
-                    ParseLocalPrbQuotaAction(actionConfig[actionIndex],
-                                            sstPerSlice,
-                                            simTime,
-                                            context);
-
-                NS_ABORT_MSG_UNLESS(
-                    action.applyTime > previousApplyTime,
-                    "localPrbQuotaActions must be ordered by strictly "
-                    "increasing applyTime values");
-
-                previousApplyTime = action.applyTime;
-                localPrbQuotaActions.push_back(action);
-            }
-        }
-        ueNum = std::accumulate(uesPerSlice.begin(), uesPerSlice.end(), 0);
-        NS_LOG_INFO("Total number of UEs (from slice configuration): " << ueNum);
-
-    }else {
-        NS_FATAL_ERROR("Could not open configuration file: " << configFilePath);
-    }
+    const std::vector<LocalPrbQuotaAction>&
+        localPrbQuotaActions =
+            scenarioConfig.localPrbQuotaActions;
 
     NS_ABORT_MSG_UNLESS(
         trafficStartTime > 1.0 &&
@@ -253,12 +159,36 @@ int main(int argc, char* argv[])
         sliceMetricsInterval > 0.0,
         "sliceMetricsInterval must be greater than zero");
 
-    if (!sliceMetricsFilePath.empty())
+    const bool sliceMetricsRequired =
+        !sliceMetricsFilePath.empty() ||
+        scenarioConfig.localSliceController.has_value();
+
+    if (sliceMetricsRequired)
     {
         NS_ABORT_MSG_UNLESS(
             trafficStartTime + sliceMetricsInterval <= simTime,
             "The simulation must contain at least one complete "
             "slice metric observation window");
+    }
+
+    if (scenarioConfig.localSliceController.has_value())
+    {
+        const LocalSliceControllerConfig& controllerConfig =
+            scenarioConfig.localSliceController.value();
+
+        NS_ABORT_MSG_UNLESS(
+            controllerConfig.initialApplyTime < trafficStartTime,
+            "Controller initial quotas must be applied before traffic starts");
+
+        NS_ABORT_MSG_UNLESS(
+            sliceMetricsInterval <= controllerConfig.decisionInterval,
+            "sliceMetricsInterval cannot exceed the controller "
+            "decisionInterval");
+
+        NS_ABORT_MSG_UNLESS(
+            trafficStartTime + controllerConfig.decisionInterval <= simTime,
+            "The simulation must contain at least one complete "
+            "controller decision period");
     }
 
     // Map each UE to its slice and traffic type (for post-processing)
@@ -441,6 +371,28 @@ int main(int argc, char* argv[])
                                             gNbDevs,
                                             ueDevs);
 
+    std::shared_ptr<LocalPeriodicSliceController>
+        localSliceController;
+
+    // Create the optional closed-loop controller and schedule its initial
+    // quota distribution after the UE-to-slice mapping has been installed.
+    if (scenarioConfig.localSliceController.has_value())
+    {
+        const LocalSliceControllerConfig& controllerConfig =
+            scenarioConfig.localSliceController.value();
+
+        localSliceController =
+            std::make_shared<LocalPeriodicSliceController>(
+                controllerConfig,
+                gNbDevs);
+
+        Simulator::Schedule(
+            Seconds(controllerConfig.initialApplyTime),
+            [localSliceController]() {
+                localSliceController->ApplyInitialQuotas();
+            });
+    }
+
     // Schedule every locally configured PRB quota action.
     for (const auto& action : localPrbQuotaActions)
     {
@@ -566,7 +518,7 @@ int main(int argc, char* argv[])
                 resolvedTrafficType = trafficProfiles.begin()->first;
             }
 
-            TrafficProfile profile = trafficProfiles[resolvedTrafficType];
+            const NestTrafficProfile& profile = trafficProfiles.at(resolvedTrafficType);
 
             Ipv4Address ueAddr = ueIpIfaces.GetAddress(nodeIdx);
 
@@ -579,11 +531,11 @@ int main(int argc, char* argv[])
                         << "): port " << port << " type " << resolvedTrafficType);
 
             OnOffHelper trafficApp("ns3::UdpSocketFactory", InetSocketAddress(ueAddr, port));
-            trafficApp.SetAttribute("DataRate", DataRateValue(DataRate(std::to_string((int)profile.dataRate) + "Mbps")));
+            trafficApp.SetAttribute("DataRate",DataRateValue(DataRate(static_cast<uint64_t>(profile.dataRateMbps * 1e6))));
             trafficApp.SetAttribute("PacketSize", UintegerValue(profile.packetSize));
 
-            std::string onTimeStr = "ns3::ExponentialRandomVariable[Mean=" + std::to_string(profile.onTime) + "]";
-            std::string offTimeStr = "ns3::ExponentialRandomVariable[Mean=" + std::to_string(profile.offTime) + "]";
+            std::string onTimeStr ="ns3::ExponentialRandomVariable[Mean=" + std::to_string(profile.onTimeSeconds) +"]";
+            std::string offTimeStr ="ns3::ExponentialRandomVariable[Mean=" + std::to_string(profile.offTimeSeconds) +"]";
 
             trafficApp.SetAttribute("OnTime", StringValue(onTimeStr));
             trafficApp.SetAttribute("OffTime", StringValue(offTimeStr));
@@ -623,22 +575,48 @@ int main(int argc, char* argv[])
     FlowMonitorHelper flowmonHelper;
     Ptr<FlowMonitor> monitor = flowmonHelper.InstallAll();
 
-    if (!sliceMetricsFilePath.empty())
+    SliceWindowMetricsCallback sliceMetricsCallback;
+
+    // Forward every completed metrics window to the optional controller.
+    if (localSliceController)
     {
-        sliceMetricsStream.open(
-            sliceMetricsFilePath,
-            std::ios::out | std::ios::trunc);
+        sliceMetricsCallback =
+            [localSliceController](
+                double windowStart,
+                double windowEnd,
+                const std::vector<SliceWindowMetrics>& metrics) {
+                localSliceController->ObserveWindow(
+                    windowStart,
+                    windowEnd,
+                    metrics);
+            };
+    }
 
-        NS_ABORT_MSG_UNLESS(
-            sliceMetricsStream.is_open(),
-            "Could not open slice metric file: "
-                << sliceMetricsFilePath);
+    if (sliceMetricsRequired)
+    {
+        std::ofstream* sliceMetricsOutput = nullptr;
 
-        sliceMetricsStream
-            << "window_start_s,window_end_s,window_duration_s,"
-            << "slice_index,sst,tx_packets,rx_packets,"
-            << "tx_bytes,rx_bytes,offered_mbps,"
-            << "throughput_mbps,mean_delay_ms\n";
+        // CSV output remains optional even when the controller needs metrics.
+        if (!sliceMetricsFilePath.empty())
+        {
+            sliceMetricsStream.open(
+                sliceMetricsFilePath,
+                std::ios::out | std::ios::trunc);
+
+            NS_ABORT_MSG_UNLESS(
+                sliceMetricsStream.is_open(),
+                "Could not open slice metric file: "
+                    << sliceMetricsFilePath);
+
+            sliceMetricsStream
+                << "window_start_s,window_end_s,window_duration_s,"
+                << "slice_index,sst,tx_packets,rx_packets,"
+                << "tx_bytes,rx_bytes,offered_mbps,"
+                << "throughput_mbps,mean_delay_ms\n";
+
+            sliceMetricsOutput =
+                &sliceMetricsStream;
+        }
 
         Simulator::Schedule(
             Seconds(trafficStartTime),
@@ -654,8 +632,8 @@ int main(int argc, char* argv[])
             simTime,
             sliceMetricsInterval,
             &sliceMetricsState,
-            &sliceMetricsStream,
-            SliceWindowMetricsCallback{});
+            sliceMetricsOutput,
+            sliceMetricsCallback);
     }
 
     // Run
