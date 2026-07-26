@@ -4,7 +4,6 @@ set(base_examples
     nori-mimo-demo
     nori-simple-rl-sched
     nori-embb-urllc-scenario
-    nest-embb-urllc-slicing
 )
 
 foreach(
@@ -20,3 +19,12 @@ build_lib_example(
                       ${liblte}
   )
 endforeach()
+
+build_lib_example(
+    NAME nest-embb-urllc-slicing
+    SOURCE_FILES nest-embb-urllc-slicing.cc
+                 nest/slice-metrics-collector.cc
+    LIBRARIES_TO_LINK ${libnori}
+                      ${libnr}
+                      ${liblte}
+)
