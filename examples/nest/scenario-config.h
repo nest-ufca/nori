@@ -24,6 +24,18 @@ struct NestTrafficProfile
 };
 
 /**
+ * E2 connection parameters used by the NEST scenario.
+ */
+struct NestE2Config
+{
+    bool enabled{false};
+    std::string termAddress{"10.244.0.188"};
+    uint16_t termPort{36422};
+    uint16_t localPortBase{38470};
+    bool realtime{true};
+};
+
+/**
  * Complete JSON configuration used by the NEST eMBB/URLLC scenario.
  *
  * Command-line output paths and collection intervals remain outside this
@@ -46,6 +58,9 @@ struct NestScenarioConfig
     uint16_t numerology{0};
     double txPower{0.0};
     double ueTxPower{0.0};
+
+    // Optional E2 connection. Disabled configurations remain fully offline.
+    NestE2Config e2;
 
     // Per-slice vectors. The same index identifies one slice in all vectors.
     std::vector<int> uesPerSlice;
@@ -75,6 +90,14 @@ NestScenarioConfig
 LoadNestScenarioConfig(
     const std::string& configFilePath,
     bool enableRanSlicing);
+
+/**
+ * Validate an E2 configuration after JSON parsing or CLI overrides.
+ */
+void
+ValidateNestE2Config(
+    const NestE2Config& config,
+    uint16_t gNbNum);
 
 } // namespace ns3
 

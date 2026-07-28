@@ -27,12 +27,42 @@
 #include <set>
 #include <algorithm>
 #include <fstream>
+#include <limits>
 #include <memory>
 
 using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("nest-embb-urllc-slicing");
 
+namespace
+{
+
+/**
+ * Parse an explicitly provided boolean command-line override.
+ */
+bool
+ParseBooleanCommandLineOverride(
+    const std::string& value,
+    const std::string& optionName)
+{
+    if (value == "true" || value == "1")
+    {
+        return true;
+    }
+
+    if (value == "false" || value == "0")
+    {
+        return false;
+    }
+
+    NS_FATAL_ERROR(
+        optionName
+        << " must be true, false, 1 or 0");
+
+    return false;
+}
+
+} // namespace
 
 /**
  * Configure and execute the NEST eMBB/URLLC slicing scenario.
@@ -57,8 +87,11 @@ int main(int argc, char* argv[])
 
     bool enableRanSlicing = true;
 
-    std::string ipE2TermRic =
-        "10.244.0.188";
+    std::string enableE2Override;
+    std::string ipE2TermRic;
+    uint32_t e2TermPortOverride{0};
+    uint32_t e2LocalPortBaseOverride{0};
+    std::string e2RealtimeOverride;
 
     std::string rbgTraceFilePath;
     std::ofstream rbgTraceStream;
@@ -83,9 +116,30 @@ int main(int argc, char* argv[])
         enableRanSlicing);
 
     cmd.AddValue(
+        "enableE2",
+        "Override e2.enabled from JSON; true or false",
+        enableE2Override);
+
+    cmd.AddValue(
         "ipE2TermRic",
-        "Ip address of the E2 termination",
+        "Override e2.termAddress from JSON",
         ipE2TermRic);
+
+    cmd.AddValue(
+        "e2TermPort",
+        "Override e2.termPort from JSON; zero keeps the JSON value",
+        e2TermPortOverride);
+
+    cmd.AddValue(
+        "e2LocalPortBase",
+        "Override e2.localPortBase from JSON; "
+        "zero keeps the JSON value",
+        e2LocalPortBaseOverride);
+
+    cmd.AddValue(
+        "e2Realtime",
+        "Override e2.realtime from JSON; true or false",
+        e2RealtimeOverride);
 
     cmd.AddValue(
         "rbgTraceFile",
@@ -117,6 +171,56 @@ int main(int argc, char* argv[])
         LoadNestScenarioConfig(
             configFilePath,
             enableRanSlicing);
+
+    NestE2Config e2Config =
+        scenarioConfig.e2;
+
+    // Apply only E2 options explicitly provided on the command line.
+    if (!enableE2Override.empty())
+    {
+        e2Config.enabled =
+            ParseBooleanCommandLineOverride(
+                enableE2Override,
+                "--enableE2");
+    }
+
+    if (!ipE2TermRic.empty())
+    {
+        e2Config.termAddress =
+            ipE2TermRic;
+    }
+
+    if (e2TermPortOverride != 0)
+    {
+        NS_ABORT_MSG_IF(
+            e2TermPortOverride >
+                std::numeric_limits<uint16_t>::max(),
+            "--e2TermPort must be in the range 1..65535");
+
+        e2Config.termPort =
+            static_cast<uint16_t>(e2TermPortOverride);
+    }
+
+    if (e2LocalPortBaseOverride != 0)
+    {
+        NS_ABORT_MSG_IF(
+            e2LocalPortBaseOverride >
+                std::numeric_limits<uint16_t>::max(),
+            "--e2LocalPortBase must be in the range 1..65535");
+
+        e2Config.localPortBase =
+            static_cast<uint16_t>(e2LocalPortBaseOverride);
+    }
+
+    if (!e2RealtimeOverride.empty())
+    {
+        e2Config.realtime =
+            ParseBooleanCommandLineOverride(
+                e2RealtimeOverride,
+                "--e2Realtime");
+    }
+
+    ValidateNestE2Config(e2Config, scenarioConfig.gNbNum);
 
     // Create immutable local aliases for the validated scenario parameters.
     // Vector and map aliases use references to avoid unnecessary copies.
@@ -212,7 +316,19 @@ int main(int argc, char* argv[])
     std::vector<int> ueSliceId(ueNum, -1);
     std::vector<std::string> ueSliceTrafficType(ueNum, "");
 
-    GlobalValue::Bind("SimulatorImplementationType", StringValue("ns3::RealtimeSimulatorImpl"));
+    if (e2Config.enabled && e2Config.realtime)
+    {
+        GlobalValue::Bind(
+            "SimulatorImplementationType",
+            StringValue("ns3::RealtimeSimulatorImpl"));
+
+        NS_LOG_INFO(
+            "Realtime simulator enabled for E2 communication");
+    }
+    else
+    {
+        NS_LOG_INFO("Using the default discrete-event simulator");
+    }
 
     Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
 
@@ -373,10 +489,36 @@ int main(int argc, char* argv[])
                 "Could not connect SliceRbgAllocation trace");
         }
     }
-    // Enable E2 support on gNBs
-    // auto e2 = CreateObject<E2TermHelper>();
-    // e2->SetAttribute("E2TermIp", StringValue(ipE2TermRic));
-    // e2->InstallE2Term(gNbDevs);
+
+    // Retain the helper until simulation teardown because it owns scheduled
+    // setup callbacks used by the E2 interfaces.
+    Ptr<E2TermHelper> e2TermHelper;
+
+    if (e2Config.enabled)
+    {
+        e2TermHelper =
+            CreateObject<E2TermHelper>();
+
+        e2TermHelper->SetAttribute(
+            "E2TermIp",
+            StringValue(e2Config.termAddress));
+
+        e2TermHelper->SetAttribute(
+            "E2Port",
+            UintegerValue(e2Config.termPort));
+
+        e2TermHelper->SetAttribute(
+            "E2LocalPort",
+            UintegerValue(e2Config.localPortBase));
+
+        e2TermHelper->InstallE2Term(gNbDevs);
+
+        NS_LOG_INFO(
+            "E2 enabled: "
+            << e2Config.termAddress
+            << ":"
+            << e2Config.termPort);
+    }
 
     nrHelper->AttachToClosestGnb(ueDevs, gNbDevs);
 

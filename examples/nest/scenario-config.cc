@@ -1,6 +1,7 @@
 #include "scenario-config.h"
 
 #include "ns3/core-module.h"
+#include "ns3/ipv4-address.h"
 
 #include <nlohmann/json.hpp>
 
@@ -413,7 +414,110 @@ ParseLocalSliceController(
     return controllerConfig;
 }
 
+/**
+ * Parse the optional E2 connection section.
+ */
+NestE2Config
+ParseE2Configuration(
+    const nlohmann::json& configJson,
+    uint16_t gNbNum)
+{
+    NestE2Config e2Config;
+
+    if (!configJson.contains("e2"))
+    {
+        ValidateNestE2Config(e2Config, gNbNum);
+        return e2Config;
+    }
+
+    const nlohmann::json& e2Json =
+        configJson["e2"];
+
+    NS_ABORT_MSG_UNLESS(
+        e2Json.is_object(),
+        "e2 must be a JSON object");
+
+    e2Config.enabled =
+        e2Json.value("enabled", e2Config.enabled);
+
+    e2Config.termAddress =
+        e2Json.value(
+            "termAddress",
+            e2Config.termAddress);
+
+    e2Config.realtime =
+        e2Json.value("realtime", e2Config.realtime);
+
+    const int64_t termPort =
+        e2Json.value(
+            "termPort",
+            static_cast<int64_t>(e2Config.termPort));
+
+    const int64_t localPortBase =
+        e2Json.value(
+            "localPortBase",
+            static_cast<int64_t>(e2Config.localPortBase));
+
+    NS_ABORT_MSG_IF(
+        termPort <= 0 ||
+            termPort >
+                std::numeric_limits<uint16_t>::max(),
+        "e2.termPort must be in the range 1..65535");
+
+    NS_ABORT_MSG_IF(
+        localPortBase <= 0 ||
+            localPortBase >
+                std::numeric_limits<uint16_t>::max(),
+        "e2.localPortBase must be in the range 1..65535");
+
+    e2Config.termPort =
+        static_cast<uint16_t>(termPort);
+
+    e2Config.localPortBase =
+        static_cast<uint16_t>(localPortBase);
+
+    ValidateNestE2Config(e2Config, gNbNum);
+    return e2Config;
+}
+
 } // namespace
+
+/**
+ * Validate E2 endpoint values and the per-gNB local port range.
+ */
+void
+ValidateNestE2Config(
+    const NestE2Config& config,
+    uint16_t gNbNum)
+{
+    const Ipv4Address termAddress(
+        config.termAddress.c_str());
+
+    NS_ABORT_MSG_UNLESS(
+        termAddress.IsInitialized() &&
+            !termAddress.IsAny() &&
+            !termAddress.IsBroadcast() &&
+            !termAddress.IsMulticast(),
+        "e2.termAddress must be a valid unicast IPv4 address");
+
+    NS_ABORT_MSG_IF(
+        config.termPort == 0,
+        "e2.termPort must be in the range 1..65535");
+
+    NS_ABORT_MSG_IF(
+        config.localPortBase == 0,
+        "e2.localPortBase must be in the range 1..65535");
+
+    const uint32_t highestLocalPort =
+        static_cast<uint32_t>(config.localPortBase) +
+        gNbNum;
+
+    NS_ABORT_MSG_IF(
+        highestLocalPort >
+            std::numeric_limits<uint16_t>::max(),
+        "e2.localPortBase does not leave enough ports "
+        "for all configured gNBs");
+}
 
 /**
  * Load and validate the complete JSON configuration for the NEST scenario.
@@ -552,6 +656,12 @@ LoadNestScenarioConfig(
         !std::isfinite(config.txPower) ||
             !std::isfinite(config.ueTxPower),
         "NR transmit powers must be finite");
+
+    // Parse the optional E2 endpoint independently from slicing control.
+    config.e2 =
+        ParseE2Configuration(
+            configJson,
+            config.gNbNum);
 
     // Parse structured traffic, slice and control configurations.
     ParseTrafficProfiles(configJson, &config);
