@@ -32,28 +32,35 @@ struct NestTrafficProfile
  */
 struct NestScenarioConfig
 {
+    // Topology parameters.
     uint16_t gNbNum{1};
     uint32_t ueNum{0};
 
+    // Simulation timing and topology spacing.
     double simTime{10.0};
     double interSiteDistance{20.0};
 
+    // NR radio parameters. Frequency and bandwidth are stored in hertz.
     double centralFrequency{3.6e9};
     double bandwidth{100e6};
     uint16_t numerology{0};
     double txPower{0.0};
     double ueTxPower{0.0};
 
+    // Per-slice vectors. The same index identifies one slice in all vectors.
     std::vector<int> uesPerSlice;
     std::vector<uint8_t> sstPerSlice;
     std::vector<std::string> trafficTypes;
 
+    // Traffic profiles indexed by their JSON names, such as eMBB and URLLC.
     std::map<std::string, NestTrafficProfile>
         trafficProfiles;
 
+    // Deterministic quota actions scheduled at predefined simulation times.
     std::vector<LocalPrbQuotaAction>
         localPrbQuotaActions;
 
+    // Optional closed-loop controller configuration.
     std::optional<LocalSliceControllerConfig>
         localSliceController;
 };

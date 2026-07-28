@@ -33,13 +33,25 @@ using namespace ns3;
 
 NS_LOG_COMPONENT_DEFINE("nest-embb-urllc-slicing");
 
+
+/**
+ * Configure and execute the NEST eMBB/URLLC slicing scenario.
+ *
+ * The scenario creates an end-to-end NR network with EPC, installs one or
+ * more traffic profiles, maps UEs to slices, optionally enables local slice
+ * control, collects metrics and prints post-simulation flow statistics.
+ */
 int main(int argc, char* argv[])
 {
     LogComponentEnable("nest-embb-urllc-slicing", LOG_LEVEL_INFO);
+    // Enable scenario and E2 diagnostic logs.
     LogComponentEnable("E2Interface", LOG_LEVEL_INFO);
     LogComponentEnable("E2Termination", LOG_LEVEL_INFO);
     //LogComponentEnable("NrRLMacSchedulerOfdma", LOG_LEVEL_INFO);
 
+    // Execution-level options controlled from the command line.
+    // Network topology, radio parameters, slices and traffic profiles are
+    // loaded from the JSON configuration file.
     std::string configFilePath =
         "contrib/nori/examples/config.json";
 
@@ -99,12 +111,15 @@ int main(int argc, char* argv[])
 
     cmd.Parse(argc, argv);
 
-    // Load and validate all JSON-controlled scenario parameters.
+    // Load and validate all JSON-controlled network, radio, traffic and
+    // slicing parameters after parsing the selected configuration path.
     const NestScenarioConfig scenarioConfig =
         LoadNestScenarioConfig(
             configFilePath,
             enableRanSlicing);
 
+    // Create immutable local aliases for the validated scenario parameters.
+    // Vector and map aliases use references to avoid unnecessary copies.
     const uint16_t gNbNum =
         scenarioConfig.gNbNum;
 
@@ -149,6 +164,8 @@ int main(int argc, char* argv[])
         localPrbQuotaActions =
             scenarioConfig.localPrbQuotaActions;
 
+    // Validate event ordering and guarantee enough simulated time for metric
+    // collection and, when enabled, at least one controller decision.
     NS_ABORT_MSG_UNLESS(
         trafficStartTime > 1.0 &&
             trafficStartTime < simTime,

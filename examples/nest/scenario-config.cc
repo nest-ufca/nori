@@ -126,6 +126,7 @@ ParseSliceConfiguration(
             slicesJson["SstPerSlice"].is_array(),
         "slices.SstPerSlice must be a JSON array");
 
+    // Read the parallel per-slice arrays from the JSON document.
     const std::vector<uint32_t> ueCounts =
         slicesJson["UesPerSlice"]
             .get<std::vector<uint32_t>>();
@@ -142,6 +143,7 @@ ParseSliceConfiguration(
         ueCounts.empty(),
         "At least one slice must be configured");
 
+    // Every array index must describe the same logical slice.
     NS_ABORT_MSG_IF(
         config->trafficTypes.size() != ueCounts.size() ||
             ssts.size() != ueCounts.size(),
@@ -159,6 +161,7 @@ ParseSliceConfiguration(
     std::set<uint8_t> configuredSsts;
     uint64_t totalUes = 0;
 
+    // Validate each slice and build the internal slice vectors.
     for (std::size_t sliceIndex = 0;
          sliceIndex < ueCounts.size();
          ++sliceIndex)
@@ -200,6 +203,7 @@ ParseSliceConfiguration(
             std::numeric_limits<uint32_t>::max(),
         "The total UE count exceeds the supported range");
 
+    // Derive the total number of UEs from all configured slices.
     config->ueNum =
         static_cast<uint32_t>(totalUes);
 }
@@ -216,11 +220,14 @@ ParseLocalPrbQuotaActions(
     NS_ABORT_MSG_IF(config == nullptr,
                     "Scenario configuration pointer is null");
 
+    // Reject the obsolete quota format to keep the configuration schema
+    // unambiguous.
     NS_ABORT_MSG_IF(
         configJson.contains("localPrbQuotas"),
         "localPrbQuotas is no longer supported; "
         "use localPrbQuotaActions instead");
 
+    // Deterministic local actions are optional.
     if (!configJson.contains("localPrbQuotaActions"))
     {
         return;
@@ -238,6 +245,8 @@ ParseLocalPrbQuotaActions(
         enableRanSlicing,
         "Local PRB quota actions require enableRanSlicing=true");
 
+    // Actions must occur after slice mapping at 1.0 s and in strict
+    // chronological order.
     double previousApplyTime = 1.0;
 
     for (std::size_t actionIndex = 0;
@@ -277,6 +286,7 @@ ParseLocalSliceController(
     bool enableRanSlicing,
     const NestScenarioConfig& scenarioConfig)
 {
+    // The local controller is optional and may also be explicitly disabled.
     if (!configJson.contains("localSliceController"))
     {
         return std::nullopt;
@@ -294,10 +304,12 @@ ParseLocalSliceController(
         return std::nullopt;
     }
 
+    // Quota control requires the slice-aware NORI scheduler.
     NS_ABORT_MSG_UNLESS(
         enableRanSlicing,
         "The local slice controller requires enableRanSlicing=true");
 
+    // Read policy parameters, using defaults for optional JSON fields.
     LocalSliceControllerConfig controllerConfig;
 
     controllerConfig.initialApplyTime =
@@ -320,6 +332,8 @@ ParseLocalSliceController(
     controllerConfig.maximumQuota =
         controllerJson.value("maximumQuota", 90u);
 
+    // Initial quotas must be applied after slice mapping and before
+    // simulation end.
     NS_ABORT_MSG_IF(
         !std::isfinite(controllerConfig.initialApplyTime) ||
             controllerConfig.initialApplyTime <= 1.0 ||
@@ -334,6 +348,8 @@ ParseLocalSliceController(
             !controllerJson["slices"].empty(),
         "localSliceController.slices must be a non-empty JSON array");
 
+    // Index controller entries by SST to detect duplicates and restore
+    // scenario order.
     std::map<uint8_t, LocalSliceControllerSliceConfig>
         slicesBySst;
 
@@ -407,6 +423,7 @@ LoadNestScenarioConfig(
     const std::string& configFilePath,
     bool enableRanSlicing)
 {
+    // Open the scenario configuration file.
     std::ifstream configFile(configFilePath);
 
     NS_ABORT_MSG_UNLESS(
@@ -414,6 +431,7 @@ LoadNestScenarioConfig(
         "Could not open configuration file: " +
             configFilePath);
 
+    // Parse the JSON document and report syntax errors with file context.
     nlohmann::json configJson;
 
     try
@@ -435,6 +453,7 @@ LoadNestScenarioConfig(
 
     NestScenarioConfig config;
 
+    // Validate the required top-level JSON sections.
     NS_ABORT_MSG_UNLESS(
         configJson.contains("topology") &&
             configJson["topology"].is_object(),
@@ -450,6 +469,7 @@ LoadNestScenarioConfig(
             configJson["NR"].is_object(),
         "The scenario must contain an NR object");
 
+    // Parse scalar topology, simulation and NR parameters.
     const uint32_t gNbNum =
         configJson["topology"].value(
             "numGNb",
@@ -484,6 +504,7 @@ LoadNestScenarioConfig(
             "bandwidthMHz",
             config.bandwidth / 1e6);
 
+    // JSON exposes MHz for readability; ns-3 receives bandwidth in Hz.
     config.bandwidth =
         bandwidthMHz * 1e6;
 
@@ -502,6 +523,7 @@ LoadNestScenarioConfig(
             "ueTxPower",
             config.ueTxPower);
 
+    // Validate scalar values before constructing the scenario.
     NS_ABORT_MSG_IF(
         !std::isfinite(config.interSiteDistance) ||
             config.interSiteDistance <= 0.0,
@@ -531,6 +553,7 @@ LoadNestScenarioConfig(
             !std::isfinite(config.ueTxPower),
         "NR transmit powers must be finite");
 
+    // Parse structured traffic, slice and control configurations.
     ParseTrafficProfiles(configJson, &config);
 
     ParseSliceConfiguration(configJson, &config);
@@ -546,6 +569,8 @@ LoadNestScenarioConfig(
             enableRanSlicing,
             config);
 
+    // Prevent two local quota sources from controlling the scheduler
+    // simultaneously.
     NS_ABORT_MSG_IF(
         !config.localPrbQuotaActions.empty() &&
             config.localSliceController.has_value(),
