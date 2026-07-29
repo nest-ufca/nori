@@ -29,8 +29,8 @@ struct NestTrafficProfile
 struct NestE2Config
 {
     bool enabled{false};
-    std::string termAddress{"10.244.0.188"};
-    uint16_t termPort{36422};
+    std::string termAddress{"10.0.2.10"};
+    uint16_t termPort{36421};
     uint16_t localPortBase{38470};
     bool realtime{true};
 };
