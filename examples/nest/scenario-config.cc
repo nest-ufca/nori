@@ -440,6 +440,12 @@ ParseE2Configuration(
     e2Config.enabled =
         e2Json.value("enabled", e2Config.enabled);
 
+    e2Config.mcc =
+        e2Json.value("mcc", e2Config.mcc);
+
+    e2Config.mnc =
+        e2Json.value("mnc", e2Config.mnc);
+
     e2Config.termAddress =
         e2Json.value(
             "termAddress",
@@ -492,6 +498,28 @@ ValidateNestE2Config(
 {
     const Ipv4Address termAddress(
         config.termAddress.c_str());
+
+    const auto containsOnlyDigits =
+        [](const std::string& value) {
+            return std::all_of(
+                value.begin(),
+                value.end(),
+                [](char character) {
+                    return character >= '0' &&
+                        character <= '9';
+                });
+        };
+
+    NS_ABORT_MSG_UNLESS(
+        config.mcc.size() == 3 &&
+            containsOnlyDigits(config.mcc),
+        "e2.mcc must contain exactly three decimal digits");
+
+    NS_ABORT_MSG_UNLESS(
+        (config.mnc.size() == 2 ||
+         config.mnc.size() == 3) &&
+            containsOnlyDigits(config.mnc),
+        "e2.mnc must contain two or three decimal digits");
 
     NS_ABORT_MSG_UNLESS(
         termAddress.IsInitialized() &&

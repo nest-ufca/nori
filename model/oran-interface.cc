@@ -126,8 +126,13 @@ E2Termination::DoStart()
     // char sixth[4]; //PLMN ID
     // std::strcpy (sixth, m_plmnId.c_str ());
 
-    NS_LOG_INFO("In ns3::E2Term:  GNB" << m_gnbId << ", clientPort " << m_clientPort << ", ricPort "
-                                       << m_ricPort << ", PlmnID " << m_plmnId);
+    NS_LOG_INFO(
+        "In ns3::E2Term: GNB"
+        << m_gnbId
+        << ", clientPort "
+        << m_clientPort
+        << ", ricPort "
+        << m_ricPort);
 
     // char* argv [] = {nullptr, &second [0], &third [0], &fourth[0], &fifth[0],&sixth[0]};
     m_e2sim->run_loop(m_ricAddress, m_ricPort, m_clientPort, m_gnbId, m_plmnId);

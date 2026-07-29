@@ -511,6 +511,14 @@ int main(int argc, char* argv[])
             "E2LocalPort",
             UintegerValue(e2Config.localPortBase));
 
+        e2TermHelper->SetAttribute(
+            "Mcc",
+            StringValue(e2Config.mcc));
+
+        e2TermHelper->SetAttribute(
+            "Mnc",
+            StringValue(e2Config.mnc));
+
         e2TermHelper->InstallE2Term(gNbDevs);
 
         NS_LOG_INFO(

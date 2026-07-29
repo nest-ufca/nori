@@ -32,6 +32,69 @@ namespace ns3
 NS_LOG_COMPONENT_DEFINE("E2TermHelper");
 NS_OBJECT_ENSURE_REGISTERED(E2TermHelper);
 
+namespace
+{
+
+/**
+ * Encode an MCC/MNC pair as the three-byte TBCD PLMN identity required by
+ * E2AP and other 3GPP identifiers.
+ *
+ * A two-digit MNC uses 0xF as the unused third MNC digit. For example,
+ * MCC 001 and MNC 01 are encoded as the bytes 00 F1 10.
+ *
+ * @param mcc Three-decimal-digit Mobile Country Code.
+ * @param mnc Two- or three-decimal-digit Mobile Network Code.
+ * @return Binary string containing exactly three encoded PLMN bytes.
+ */
+std::string
+EncodePlmnIdentity(
+    const std::string& mcc,
+    const std::string& mnc)
+{
+    NS_ABORT_MSG_UNLESS(
+        mcc.size() == 3 &&
+            (mnc.size() == 2 ||
+             mnc.size() == 3),
+        "PLMN requires a three-digit MCC and a two- or three-digit MNC");
+
+    const auto digitValue =
+        [](char character) -> uint8_t {
+            NS_ABORT_MSG_UNLESS(
+                character >= '0' &&
+                    character <= '9',
+                "MCC and MNC must contain only decimal digits");
+
+            return static_cast<uint8_t>(
+                character - '0');
+        };
+
+    const uint8_t thirdMncDigit =
+        mnc.size() == 3
+            ? digitValue(mnc[2])
+            : 0x0f;
+
+    std::string encodedPlmn(3, '\0');
+
+    encodedPlmn[0] =
+        static_cast<char>(
+            (digitValue(mcc[1]) << 4) |
+            digitValue(mcc[0]));
+
+    encodedPlmn[1] =
+        static_cast<char>(
+            (thirdMncDigit << 4) |
+            digitValue(mcc[2]));
+
+    encodedPlmn[2] =
+        static_cast<char>(
+            (digitValue(mnc[1]) << 4) |
+            digitValue(mnc[0]));
+
+    return encodedPlmn;
+}
+
+} // namespace
+
 E2TermHelper::E2TermHelper()
 {
     NS_LOG_FUNCTION(this);
@@ -63,7 +126,17 @@ E2TermHelper::GetTypeId()
                                           "The first port number for the local bind",
                                           UintegerValue(38470),
                                           MakeUintegerAccessor(&E2TermHelper::m_e2localPort),
-                                          MakeUintegerChecker<uint16_t>());
+                                          MakeUintegerChecker<uint16_t>())
+                            .AddAttribute("Mcc",
+                                          "Three-digit Mobile Country Code",
+                                          StringValue("001"),
+                                          MakeStringAccessor(&E2TermHelper::m_mcc),
+                                          MakeStringChecker())
+                            .AddAttribute("Mnc",
+                                          "Two- or three-digit Mobile Network Code",
+                                          StringValue("01"),
+                                          MakeStringAccessor(&E2TermHelper::m_mnc),
+                                          MakeStringChecker());
     return tid;
 }
 
@@ -80,17 +153,9 @@ E2TermHelper::InstallE2Term(Ptr<NetDevice> NetDevice)
     // NetDevice is a gNB or eNB
     auto nrGnbNetDev = DynamicCast<NrGnbNetDevice>(NetDevice);
 
-    // Public Land Mobile Network Identifier or with abbreviated version PLMN is a combination of
-    // MCC and MNC. It is unique value and globally used to identify the mobile network that a user
-    // subscribed.
-    std::string plmnId = "268413"; // Equivalent to MCC=001 and MNC=01 in Octet string with 3 bytes
-    std::string encodedPlmnId;
-    if (plmnId.length() == 6) {
-        encodedPlmnId = {plmnId[1], plmnId[0], plmnId[3], plmnId[2], plmnId[5], plmnId[4]};
-    } 
-    else if (plmnId.length() == 5) {
-        encodedPlmnId =  {plmnId[1], plmnId[0], 'F', plmnId[2], plmnId[4], plmnId[3]};
-    }
+    const std::string encodedPlmnId =
+        EncodePlmnIdentity(m_mcc, m_mnc);
+
     // node cell ID
     uint16_t cellId{0};
     // Client local port
@@ -112,13 +177,25 @@ E2TermHelper::InstallE2Term(Ptr<NetDevice> NetDevice)
     {
         NS_ABORT_MSG("NetDevice is not a gNB or eNB");
     }
-    // Assert that configuration was properly set
-    //NS_ASSERT(plmnId == "00101" && cellId != 0 && localPort != 0);
-    printf("E2TermHelper: PLMN ID %s, Cell ID %s, Cell id int %u, Local Port %u\n",
-           plmnId.c_str(),
-           std::to_string(cellId).c_str(),
-            cellId,
-           localPort);
+
+    printf(
+        "E2TermHelper: PLMN %s-%s "
+        "(TBCD %02X %02X %02X), "
+        "Cell ID %u, Local Port %u\n",
+        m_mcc.c_str(),
+        m_mnc.c_str(),
+        static_cast<unsigned int>(
+            static_cast<unsigned char>(
+                encodedPlmnId[0])),
+        static_cast<unsigned int>(
+            static_cast<unsigned char>(
+                encodedPlmnId[1])),
+        static_cast<unsigned int>(
+            static_cast<unsigned char>(
+                encodedPlmnId[2])),
+        cellId,
+        localPort);
+
     auto e2Term = CreateObject<E2Termination>(m_e2ip,
                                               m_e2port,
                                               localPort,
