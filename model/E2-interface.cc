@@ -1,6 +1,11 @@
 #include "E2-interface.h"
 
 #include "E2-report.h"
+
+#ifdef NORI_ENABLE_KPM_V3_CODEC
+#include "kpm-subscription-parser.h"
+#endif
+
 #include "kpm-indication.h"
 #include "oran-interface.h"
 
@@ -241,6 +246,45 @@ E2Interface::FunctionServiceSubscriptionCallback(E2AP_PDU_t* sub_req_pdu)
 {
     NS_LOG_FUNCTION(this);
     NS_LOG_DEBUG("KPM Subscription Request callback");
+
+    #ifdef NORI_ENABLE_KPM_V3_CODEC
+    // Decode and validate the KPM payload before the legacy E2Sim path
+    // accepts the subscription and sends its successful response.
+    const KpmV3DecodeResult decodeResult =
+        DecodeKpmV3SubscriptionRequest(sub_req_pdu);
+
+    if (!decodeResult.success)
+    {
+        NS_LOG_ERROR(
+            "[KPM V3] Subscription payload rejected: "
+            << decodeResult.errorMessage);
+        return;
+    }
+
+    const KpmV3SubscriptionRequest& subscription =
+        decodeResult.subscription;
+
+    NS_LOG_INFO(
+        "[KPM V3] Subscription decoded: reportingPeriod="
+        << subscription.reportingPeriodMs
+        << "ms, reportStyle="
+        << subscription.reportStyle
+        << ", granularityPeriod="
+        << subscription.granularityPeriodMs
+        << "ms, measurements="
+        << subscription.measurements.size());
+
+    for (const KpmV3MeasurementRequest& measurement :
+         subscription.measurements)
+    {
+        NS_LOG_INFO(
+            "[KPM V3] Requested measurement: name="
+            << measurement.name
+            << ", noLabel="
+            << (measurement.noLabel ? "true" : "false"));
+    }
+    #endif
+
     E2Termination::RicSubscriptionRequest_rval_s params =
         m_e2term->ProcessRicSubscriptionRequest(sub_req_pdu);
     NS_LOG_DEBUG("requestorId " << +params.requestorId << ", instanceId " << +params.instanceId
