@@ -78,6 +78,17 @@ class E2Termination : public Object
                                    SubscriptionCallback sbCb);
 
     /**
+     * Register the callback triggered by a RIC Subscription Delete Request
+     * for one KPM RAN function.
+     *
+     * @param ranFunctionId ID used to identify the KPM RAN Function
+     * @param deleteCb callback triggered when the RIC removes the subscription
+     */
+    void RegisterKpmSubscriptionDeleteCallbackToE2Sm(
+        long ranFunctionId,
+        SubscriptionDeleteCallback deleteCb);
+
+    /**
      * Register an E2 Service Model.
      * Create a RAN Function Description item containing the configurations
      * for the SM, add it to the list of supported RAN functions, and

@@ -10,7 +10,6 @@
 #include "oran-interface.h"
 
 #include "ns3/nori-slicing-helper.h"
-
 #include "ns3/attribute.h"
 #include "ns3/bandwidth-part-gnb.h"
 #include "ns3/config.h"
@@ -31,8 +30,10 @@
 #include "ns3/string.h"
 #include "ns3/type-id.h"
 #include "ns3/uinteger.h"
+#include "ns3/node.h"
 
 #include <encode_e2apv1.hpp>
+#include <stdexcept>
 
 namespace ns3
 {
@@ -130,10 +131,22 @@ E2Interface::RegisterNewSinrReadingCallback([[maybe_unused]] std::string path,
 }
 
 void
-E2Interface::BuildAndSendReportMessage(E2Termination::RicSubscriptionRequest_rval_s params)
+E2Interface::BuildAndSendReportMessage()
 {
     NS_LOG_FUNCTION(this);
+
+    if (!m_kpmSubscriptionActive.load())
+    {
+        NS_LOG_DEBUG("[KPM] Ignoring report event because no subscription is active");
+        return;
+    }
+
+    NS_LOG_DEBUG("[KPM] Building periodic report at t=" << Simulator::Now().GetSeconds() << "s");
+
+    const E2Termination::RicSubscriptionRequest_rval_s params = m_kpmSubscriptionParams;
+
     NS_LOG_DEBUG("Building and sending report message for nodeB: " << m_netDev);
+
     auto e2Term = m_netDev->GetObject<E2Termination>();
     // eNB/gNB needs to have an E2 termination
     NS_ASSERT(e2Term != nullptr);
@@ -233,12 +246,64 @@ E2Interface::BuildAndSendReportMessage(E2Termination::RicSubscriptionRequest_rva
             delete pdu_du_ue;
         }
     }
-    // Use without context for thread safety; Need to study why using context it makes safe
-    Simulator::ScheduleWithContext(1,
-                                   Seconds(m_e2Periodicity),
-                                   &E2Interface::BuildAndSendReportMessage,
-                                   this,
-                                   params);
+
+    if (m_kpmSubscriptionActive.load())
+    {
+        // Recurring reports execute in the simulator thread, allowing the
+        // returned EventId to be retained for later cancellation.
+        m_kpmReportEvent = Simulator::Schedule(Seconds(m_e2Periodicity), &E2Interface::BuildAndSendReportMessage, this);
+    }
+}
+
+/**
+ * Start or restart periodic KPM reporting inside the simulator thread.
+ */
+void
+E2Interface::StartKpmReporting()
+{
+    NS_LOG_FUNCTION(this);
+
+    if (!m_kpmSubscriptionActive.load())
+    {
+        NS_LOG_INFO(
+            "[KPM] Skipping periodic reporting start because "
+            "the subscription is no longer active");
+        return;
+    }
+
+    if (m_kpmReportEvent.IsPending())
+    {
+        Simulator::Cancel(m_kpmReportEvent);
+    }
+
+    NS_LOG_INFO(
+        "[KPM] Starting periodic reporting at t="
+        << Simulator::Now().GetSeconds()
+        << "s");
+
+    BuildAndSendReportMessage();
+}
+
+/**
+ * Cancel the pending periodic KPM report inside the simulator thread.
+ */
+void
+E2Interface::StopKpmReporting()
+{
+    NS_LOG_FUNCTION(this);
+
+    if (m_kpmReportEvent.IsPending())
+    {
+        Simulator::Cancel(m_kpmReportEvent);
+
+        NS_LOG_INFO(
+            "[KPM] Pending periodic report event cancelled");
+    }
+    else
+    {
+        NS_LOG_INFO(
+            "[KPM] No pending periodic report event to cancel");
+    }
 }
 
 void
@@ -247,7 +312,9 @@ E2Interface::FunctionServiceSubscriptionCallback(E2AP_PDU_t* sub_req_pdu)
     NS_LOG_FUNCTION(this);
     NS_LOG_DEBUG("KPM Subscription Request callback");
 
-    #ifdef NORI_ENABLE_KPM_V3_CODEC
+    double reportingPeriodSeconds = m_e2Periodicity;
+
+#ifdef NORI_ENABLE_KPM_V3_CODEC
     // Decode and validate the KPM payload before the legacy E2Sim path
     // accepts the subscription and sends its successful response.
     const KpmV3DecodeResult decodeResult =
@@ -261,8 +328,9 @@ E2Interface::FunctionServiceSubscriptionCallback(E2AP_PDU_t* sub_req_pdu)
         return;
     }
 
-    const KpmV3SubscriptionRequest& subscription =
-        decodeResult.subscription;
+    const KpmV3SubscriptionRequest& subscription = decodeResult.subscription;
+
+    reportingPeriodSeconds = static_cast<double>(subscription.reportingPeriodMs) / 1000.0;
 
     NS_LOG_INFO(
         "[KPM V3] Subscription decoded: reportingPeriod="
@@ -283,21 +351,90 @@ E2Interface::FunctionServiceSubscriptionCallback(E2AP_PDU_t* sub_req_pdu)
             << ", noLabel="
             << (measurement.noLabel ? "true" : "false"));
     }
-    #endif
+#endif
 
-    E2Termination::RicSubscriptionRequest_rval_s params =
-        m_e2term->ProcessRicSubscriptionRequest(sub_req_pdu);
+    E2Termination::RicSubscriptionRequest_rval_s params = m_e2term->ProcessRicSubscriptionRequest(sub_req_pdu);
+
     NS_LOG_DEBUG("requestorId " << +params.requestorId << ", instanceId " << +params.instanceId
                                 << ", ranFuncionId " << +params.ranFuncionId << ", actionId "
                                 << +params.actionId);
 
-    static bool isFirsReportMessage = true;
-    if (isFirsReportMessage)
+
+    m_kpmSubscriptionParams = params;
+    m_e2Periodicity = reportingPeriodSeconds;
+    m_kpmSubscriptionActive.store(true);
+
+    NS_LOG_INFO(
+        "[KPM] Subscription activated: requestorId="
+        << params.requestorId
+        << ", instanceId=" << params.instanceId
+        << ", ranFunctionId=" << params.ranFuncionId
+        << ", actionId=" << static_cast<uint32_t>(params.actionId)
+        << ", reportingPeriod=" << m_e2Periodicity << "s");
+
+    // Enter the ns-3 simulator thread before manipulating scheduled events.
+    Simulator::ScheduleWithContext(m_netDev->GetNode()->GetId(), Seconds(0), &E2Interface::StartKpmReporting, this);
+}
+
+/**
+ * Validate a KPM Subscription Delete Request and stop periodic reporting.
+ *
+ * Throwing an exception prevents E2Sim from sending a successful Delete
+ * Response for an inactive or different subscription.
+ */
+void
+E2Interface::FunctionServiceSubscriptionDeleteCallback(
+    E2AP_PDU_t* pdu)
+{
+    NS_LOG_FUNCTION(this);
+
+    const encoding::ric_subscription_delete_request_info requestInfo =
+        encoding::get_subscription_delete_request_info(pdu);
+
+    NS_LOG_INFO(
+        "[KPM] Subscription Delete Request: requestorId="
+        << requestInfo.requestorId
+        << ", instanceId=" << requestInfo.instanceId
+        << ", ranFunctionId=" << requestInfo.ranFunctionId);
+
+    if (!m_kpmSubscriptionActive.load())
     {
-        NS_LOG_DEBUG("=====> isFirsReportMessage: " << isFirsReportMessage);
-        BuildAndSendReportMessage(params);
-        isFirsReportMessage = false;
+        throw std::runtime_error(
+            "Received KPM Subscription Delete Request without "
+            "an active subscription");
     }
+
+    const bool identifiersMatch =
+        requestInfo.requestorId ==
+            static_cast<long>(
+                m_kpmSubscriptionParams.requestorId) &&
+        requestInfo.instanceId ==
+            static_cast<long>(
+                m_kpmSubscriptionParams.instanceId) &&
+        requestInfo.ranFunctionId ==
+            static_cast<long>(
+                m_kpmSubscriptionParams.ranFuncionId);
+
+    if (!identifiersMatch)
+    {
+        throw std::runtime_error(
+            "KPM Subscription Delete Request does not match "
+            "the active subscription");
+    }
+
+    // Prevent further reports immediately. The pending EventId is cancelled
+    // afterward from the ns-3 simulator thread.
+    m_kpmSubscriptionActive.store(false);
+
+    // Preserve the gNB node context when moving work from the E2Sim receiver
+    // thread into the ns-3 simulator thread.
+    Simulator::ScheduleWithContext(m_netDev->GetNode()->GetId(), Seconds(0), &E2Interface::StopKpmReporting, this);
+
+    NS_LOG_INFO(
+        "[KPM] Subscription deactivated: requestorId="
+        << requestInfo.requestorId
+        << ", instanceId=" << requestInfo.instanceId
+        << ", ranFunctionId=" << requestInfo.ranFunctionId);
 }
 
 void
@@ -495,7 +632,7 @@ E2Interface::BuildRicIndicationMessageCuUp(std::string plmId)
 
         double pdcpThroughput = txBytes / m_e2Periodicity;                    // unit kbps
         std::cout << "imsi: " << imsi <<" -> " << pdcpThroughput << " kbps" << std::endl;
-        
+
         [[maybe_unused]] double pdcpThroughputRx = rxBytes / m_e2Periodicity; // unit kbps
 
         if (m_drbThrDlPdcpBasedComputationUeid.find(imsi) !=

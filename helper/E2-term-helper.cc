@@ -224,7 +224,13 @@ E2TermHelper::InstallE2Term(Ptr<NetDevice> NetDevice)
                                                 e2Messages,
                                                 std::placeholders::_1));
 
-    
+    // Register the lifecycle callback using the same KPM RAN Function ID.
+    e2Term->RegisterKpmSubscriptionDeleteCallbackToE2Sm(200,
+                                                        std::bind(
+                                                            &E2Interface::FunctionServiceSubscriptionDeleteCallback,
+                                                            e2Messages,
+                                                            std::placeholders::_1));
+
     auto ricFd = Create<RicControlFunctionDescription>();
     e2Term->RegisterSmCallbackToE2Sm(300,
                                      ricFd,

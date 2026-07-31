@@ -88,6 +88,19 @@ E2Termination::RegisterKpmCallbackToE2Sm(long ranFunctionId,
     m_e2sim->register_subscription_callback(ranFunctionId, sbCb);
 }
 
+/**
+ * Register the callback that handles KPM subscription deletion.
+ */
+void
+E2Termination::RegisterKpmSubscriptionDeleteCallbackToE2Sm(
+    long ranFunctionId,
+    SubscriptionDeleteCallback deleteCb)
+{
+    m_e2sim->register_subscription_delete_callback(
+        ranFunctionId,
+        deleteCb);
+}
+
 void
 E2Termination::RegisterSmCallbackToE2Sm(long ranFunctionId,
                                         Ptr<FunctionDescription> ranFunctionDescription,

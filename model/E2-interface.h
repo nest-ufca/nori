@@ -1,9 +1,12 @@
 #pragma once
 
+#include <atomic>
+
 #include "E2-report.h"
 #include "encode_e2apv1.hpp"
 #include "oran-interface.h"
 
+#include "ns3/event-id.h"
 #include "ns3/nr-bearer-stats-calculator.h"
 #include "ns3/nr-gnb-net-device.h"
 #include "ns3/nr-phy-rx-trace.h"
@@ -52,6 +55,13 @@ class E2Interface : public Object
     void FunctionServiceSubscriptionCallback(E2AP_PDU_t* sub_req_pdu);
 
     /**
+     * Handle a RIC Subscription Delete Request for the KPM service model.
+     *
+     * @param pdu subscription deletion request message
+     */
+    void FunctionServiceSubscriptionDeleteCallback(E2AP_PDU_t* pdu);
+
+    /**
      * @brief Register new SINR reading callback
      * @param path the path
      * @param cellId the cell identifier
@@ -71,12 +81,19 @@ class E2Interface : public Object
     void RegisterNewSinrReading(uint16_t imsi, uint16_t cellId, double avgSinr);
 
     /**
-     * @brief Build and send report message
-     * @param params subscription request parameters
-     * @param nodeBNetdev the net device of the nodeB
-     *
+     * Build and send one report for the currently active KPM subscription.
      */
-    void BuildAndSendReportMessage(E2Termination::RicSubscriptionRequest_rval_s params);
+    void BuildAndSendReportMessage();
+
+    /**
+     * Start or restart periodic KPM reporting inside the simulator thread.
+     */
+    void StartKpmReporting();
+
+    /**
+     * Cancel the pending periodic KPM report inside the simulator thread.
+     */
+    void StopKpmReporting();
 
     /**
      * @brief Report the number of TX PDU calls
@@ -157,6 +174,12 @@ class E2Interface : public Object
      * @return the flipped map
      */
     std::multimap<long double, uint16_t> FlipMap(const std::map<uint16_t, long double>& src);
+
+    // State of the single KPM subscription currently managed by this
+    // E2Interface instance.
+    std::atomic_bool m_kpmSubscriptionActive{false};
+    E2Termination::RicSubscriptionRequest_rval_s m_kpmSubscriptionParams{};
+    EventId m_kpmReportEvent;
 
     double m_e2Periodicity;                                          //<! E2 periodicity
     Ptr<NrGnbRrc> m_rrc;                                             //<! RRC object
