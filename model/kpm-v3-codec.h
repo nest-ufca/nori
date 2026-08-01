@@ -29,6 +29,17 @@ struct KpmV3MeasurementRequest
 };
 
 /**
+ * One gNB-DU UE explicitly selected by a KPM Style 5 subscription.
+ *
+ * The value represents the standard gNB-CU UE F1AP ID carried inside a
+ * UEID-GNB-DU identity.
+ */
+struct KpmV3GnbDuUeRequest
+{
+    uint64_t gnbCuUeF1apId{0};
+};
+
+/**
  * Decoded KPM subscription parameters supported by NORI.
  *
  * E2AP identifiers such as requestor ID, instance ID and action ID are not
@@ -42,6 +53,10 @@ struct KpmV3SubscriptionRequest
     uint32_t granularityPeriodMs{0};
 
     std::vector<KpmV3MeasurementRequest> measurements;
+
+    // Empty for cell-level Style 1 subscriptions and populated for the
+    // explicitly selected gNB-DU UEs of Style 5.
+    std::vector<KpmV3GnbDuUeRequest> matchingUes;
 };
 
 /**

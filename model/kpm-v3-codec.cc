@@ -4,10 +4,19 @@
 #include "E2SM-KPM-ActionDefinition.h"
 #include "LabelInfoItem.h"
 #include "MeasurementInfoItem.h"
-
 #include "E2SM-KPM-EventTriggerDefinition-Format1.h"
 #include "E2SM-KPM-EventTriggerDefinition.h"
+#include "E2SM-KPM-ActionDefinition-Format5.h"
+#include "MatchingUEidPerSubItem.h"
+#include "UEID-GNB-DU.h"
 #include "aper_decoder.h"
+#include "LabelInfoList.h"
+#include "MeasurementInfoList.h"
+#include "MeasurementLabel.h"
+#include "MeasurementType.h"
+#include "MeasurementTypeName.h"
+#include "MatchingUEidPerSubList.h"
+#include "UEID.h"
 
 #include <limits>
 #include <memory>
@@ -164,7 +173,13 @@ DecodeMeasurement(
         return false;
     }
 
-    if (item->measType.present !=
+    if (item->measType == nullptr)
+    {
+        errorMessage = "KPM measurement type is empty";
+        return false;
+    }
+
+    if (item->measType->present !=
         MeasurementType_PR_measName)
     {
         errorMessage =
@@ -173,7 +188,7 @@ DecodeMeasurement(
     }
 
     const MeasurementTypeName_t& measurementName =
-        item->measType.choice.measName;
+        item->measType->choice.measName;
 
     if (measurementName.buf == nullptr ||
         measurementName.size == 0)
@@ -187,8 +202,9 @@ DecodeMeasurement(
             measurementName.buf),
         measurementName.size);
 
-    if (item->labelInfoList.list.count != 1 ||
-        item->labelInfoList.list.array == nullptr)
+    if (item->labelInfoList == nullptr ||
+        item->labelInfoList->list.count != 1 ||
+        item->labelInfoList->list.array == nullptr)
     {
         errorMessage =
             "Each KPM measurement must contain exactly one label";
@@ -196,16 +212,17 @@ DecodeMeasurement(
     }
 
     const LabelInfoItem_t* labelItem =
-        item->labelInfoList.list.array[0];
+        item->labelInfoList->list.array[0];
 
-    if (labelItem == nullptr)
+    if (labelItem == nullptr ||
+        labelItem->measLabel == nullptr)
     {
         errorMessage = "KPM measurement label is empty";
         return false;
     }
 
     const long* noLabel =
-        labelItem->measLabel.noLabel;
+        labelItem->measLabel->noLabel;
 
     if (noLabel == nullptr ||
         *noLabel != MeasurementLabel__noLabel_true)
@@ -220,10 +237,169 @@ DecodeMeasurement(
 }
 
 /**
- * Decode a KPM Action Definition for report style 1.
+ * Decode the measurement selection shared by KPM Action Definition
+ * Formats 1 and 5.
  *
- * The supported format provides the granularity period and the named
- * measurements requested by the xApp.
+ * Format 5 embeds this Format 1 structure as its subscriptionInfo field.
+ */
+bool
+DecodeFormat1SubscriptionInfo(
+    const E2SM_KPM_ActionDefinition_Format1_t* format1,
+    KpmV3SubscriptionRequest& subscription,
+    std::string& errorMessage)
+{
+    if (format1 == nullptr)
+    {
+        errorMessage =
+            "KPM Action Definition Format 1 information is empty";
+        return false;
+    }
+
+    if (format1->granulPeriod == 0 ||
+        format1->granulPeriod >
+            std::numeric_limits<uint32_t>::max())
+    {
+        errorMessage =
+            "KPM granularity period is outside the supported range";
+        return false;
+    }
+
+    if (format1->measInfoList == nullptr ||
+        format1->measInfoList->list.count <= 0 ||
+        format1->measInfoList->list.array == nullptr)
+    {
+        errorMessage =
+            "KPM Action Definition contains no measurements";
+        return false;
+    }
+
+    const int measurementCount =
+        format1->measInfoList->list.count;
+
+    std::vector<KpmV3MeasurementRequest>
+        decodedMeasurements;
+
+    decodedMeasurements.reserve(
+        static_cast<std::size_t>(measurementCount));
+
+    for (int index = 0;
+         index < measurementCount;
+         ++index)
+    {
+        KpmV3MeasurementRequest measurement;
+
+        if (!DecodeMeasurement(
+                format1->measInfoList->list.array[index],
+                measurement,
+                errorMessage))
+        {
+            errorMessage =
+                "KPM measurement " +
+                std::to_string(index) +
+                ": " +
+                errorMessage;
+
+            return false;
+        }
+
+        decodedMeasurements.push_back(
+            std::move(measurement));
+    }
+
+    subscription.granularityPeriodMs =
+        static_cast<uint32_t>(
+            format1->granulPeriod);
+
+    subscription.measurements =
+        std::move(decodedMeasurements);
+
+    return true;
+}
+
+/**
+ * Decode the explicit gNB-DU UE selection carried by KPM Action Definition
+ * Format 5.
+ *
+ * The initial Style 5 contract supports UEID-GNB-DU identities containing a
+ * gNB-CU UE F1AP ID. Other standardized UE identity alternatives are rejected
+ * explicitly until their required fields are implemented.
+ */
+bool
+DecodeStyle5MatchingUes(
+    const MatchingUEidPerSubList_t* matchingUeIdList,
+    KpmV3SubscriptionRequest& subscription,
+    std::string& errorMessage)
+{
+    if (matchingUeIdList == nullptr ||
+        matchingUeIdList->list.count <= 0 ||
+        matchingUeIdList->list.array == nullptr)
+    {
+        errorMessage =
+            "KPM Action Definition Format 5 contains no matching UEs";
+        return false;
+    }
+
+    const int ueCount =
+        matchingUeIdList->list.count;
+
+    std::vector<KpmV3GnbDuUeRequest>
+        decodedMatchingUes;
+
+    decodedMatchingUes.reserve(
+        static_cast<std::size_t>(ueCount));
+
+    for (int index = 0;
+         index < ueCount;
+         ++index)
+    {
+        const MatchingUEidPerSubItem_t* item =
+            matchingUeIdList->list.array[index];
+
+        if (item == nullptr)
+        {
+            errorMessage =
+                "KPM matching UE " +
+                std::to_string(index) +
+                " is empty";
+            return false;
+        }
+
+        if (item->ueID == nullptr ||
+            item->ueID->present !=
+                UEID_PR_gNB_DU_UEID ||
+            item->ueID->choice.gNB_DU_UEID == nullptr)
+        {
+            errorMessage =
+                "KPM matching UE " +
+                std::to_string(index) +
+                ": only UEID-GNB-DU identities are supported";
+            return false;
+        }
+
+        KpmV3GnbDuUeRequest matchingUe;
+
+        matchingUe.gnbCuUeF1apId =
+            static_cast<uint64_t>(
+                item->ueID->choice
+                    .gNB_DU_UEID
+                    ->gNB_CU_UE_F1AP_ID);
+
+        decodedMatchingUes.push_back(
+            matchingUe);
+    }
+
+    subscription.matchingUes =
+        std::move(decodedMatchingUes);
+
+    return true;
+}
+
+/**
+ * Decode the KPM Action Definition formats supported by NORI.
+ *
+ * Style 1 selects cell-level measurements directly through Format 1. Style 5
+ * selects explicit gNB-DU UEs through Format 5 and embeds the same Format 1
+ * measurement configuration as subscriptionInfo.
  */
 bool
 DecodeActionDefinition(
@@ -251,97 +427,88 @@ DecodeActionDefinition(
         definition == nullptr)
     {
         errorMessage =
-            "Could not decode the KPM Action Definition";
+            "Could not decode the KPM Action Definition"
+            " (code=" + std::to_string( static_cast<int>(decodeResult.code)) +
+            ", consumed=" + std::to_string(decodeResult.consumed) +
+            ", size=" + std::to_string(size) +")";
         return false;
     }
 
-    if (definition->ric_Style_Type != 1)
+    switch (definition->ric_Style_Type)
     {
-        errorMessage =
-            "Only KPM report style 1 is supported";
-        return false;
-    }
-
-    if (definition->actionDefinition_formats.present !=
-        E2SM_KPM_ActionDefinition__actionDefinition_formats_PR_actionDefinition_Format1)
-    {
-        errorMessage =
-            "Only KPM Action Definition Format 1 is supported";
-        return false;
-    }
-
-    const E2SM_KPM_ActionDefinition_Format1_t*
-        format1 =
-            definition->actionDefinition_formats.choice
-                .actionDefinition_Format1;
-
-    if (format1 == nullptr)
-    {
-        errorMessage =
-            "KPM Action Definition Format 1 is empty";
-        return false;
-    }
-
-    if (format1->granulPeriod == 0 ||
-        format1->granulPeriod >
-            std::numeric_limits<uint32_t>::max())
-    {
-        errorMessage =
-            "KPM granularity period is outside the supported range";
-        return false;
-    }
-
-    const int measurementCount =
-        format1->measInfoList.list.count;
-
-    if (measurementCount <= 0 ||
-        format1->measInfoList.list.array == nullptr)
-    {
-        errorMessage =
-            "KPM Action Definition contains no measurements";
-        return false;
-    }
-
-    std::vector<KpmV3MeasurementRequest>
-        decodedMeasurements;
-
-    decodedMeasurements.reserve(
-        static_cast<std::size_t>(measurementCount));
-
-    for (int index = 0;
-         index < measurementCount;
-         ++index)
-    {
-        KpmV3MeasurementRequest measurement;
-
-        if (!DecodeMeasurement(
-                format1->measInfoList.list.array[index],
-                measurement,
-                errorMessage))
+    case 1: {
+        if (definition->actionDefinition_formats.present !=
+            E2SM_KPM_ActionDefinition__actionDefinition_formats_PR_actionDefinition_Format1)
         {
             errorMessage =
-                "KPM measurement " +
-                std::to_string(index) +
-                ": " +
-                errorMessage;
-
+                "KPM report style 1 requires Action Definition Format 1";
             return false;
         }
 
-        decodedMeasurements.push_back(
-            std::move(measurement));
+        const E2SM_KPM_ActionDefinition_Format1_t*
+            format1 =
+                definition->actionDefinition_formats.choice
+                    .actionDefinition_Format1;
+
+        if (!DecodeFormat1SubscriptionInfo(
+                format1,
+                subscription,
+                errorMessage))
+        {
+            return false;
+        }
+
+        subscription.reportStyle = 1;
+        subscription.matchingUes.clear();
+        return true;
     }
 
-    subscription.reportStyle = 1;
+    case 5: {
+        if (definition->actionDefinition_formats.present !=
+            E2SM_KPM_ActionDefinition__actionDefinition_formats_PR_actionDefinition_Format5)
+        {
+            errorMessage =
+                "KPM report style 5 requires Action Definition Format 5";
+            return false;
+        }
 
-    subscription.granularityPeriodMs =
-        static_cast<uint32_t>(
-            format1->granulPeriod);
+        const E2SM_KPM_ActionDefinition_Format5_t*
+            format5 =
+                definition->actionDefinition_formats.choice
+                    .actionDefinition_Format5;
 
-    subscription.measurements =
-        std::move(decodedMeasurements);
+        if (format5 == nullptr)
+        {
+            errorMessage =
+                "KPM Action Definition Format 5 is empty";
+            return false;
+        }
 
-    return true;
+        if (!DecodeFormat1SubscriptionInfo(
+                format5->subscriptionInfo,
+                subscription,
+                errorMessage))
+        {
+            return false;
+        }
+
+        if (!DecodeStyle5MatchingUes(
+                format5->matchingUEidList,
+                subscription,
+                errorMessage))
+        {
+            return false;
+        }
+
+        subscription.reportStyle = 5;
+        return true;
+    }
+
+    default:
+        errorMessage =
+            "Only KPM report styles 1 and 5 are supported";
+        return false;
+    }
 }
 
 } // namespace

@@ -231,6 +231,9 @@ E2TermHelper::InstallE2Term(Ptr<NetDevice> NetDevice)
                                                             e2Messages,
                                                             std::placeholders::_1));
 
+    // Start the simulator-thread bridge before Simulator::Run().
+    e2Messages->StartKpmRequestPolling();
+
     auto ricFd = Create<RicControlFunctionDescription>();
     e2Term->RegisterSmCallbackToE2Sm(300,
                                      ricFd,

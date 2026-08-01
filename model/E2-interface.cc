@@ -306,6 +306,58 @@ E2Interface::StopKpmReporting()
     }
 }
 
+/**
+ * Start the simulator-thread polling bridge for external KPM requests.
+ */
+void
+E2Interface::StartKpmRequestPolling()
+{
+    NS_LOG_FUNCTION(this);
+
+    if (m_kpmRequestPollEvent.IsPending())
+    {
+        return;
+    }
+
+    m_kpmRequestPollEvent = Simulator::ScheduleNow(&E2Interface::PollKpmRequests, this);
+}
+
+/**
+ * Process KPM lifecycle requests received from the E2Sim receiver thread.
+ *
+ * Polling from a simulator event avoids assigning external requests a
+ * wall-clock timestamp when the realtime simulator is behind schedule.
+ */
+void
+E2Interface::PollKpmRequests()
+{
+    NS_LOG_FUNCTION(this);
+
+    const bool stopRequested =
+        m_kpmStopRequested.exchange(false);
+
+    const bool startRequested =
+        m_kpmStartRequested.exchange(false);
+
+    if (stopRequested)
+    {
+        NS_LOG_INFO(
+            "[KPM] Processing queued subscription stop request");
+
+        StopKpmReporting();
+    }
+
+    if (startRequested)
+    {
+        NS_LOG_INFO(
+            "[KPM] Processing queued subscription start request");
+
+        StartKpmReporting();
+    }
+
+    m_kpmRequestPollEvent = Simulator::Schedule(MilliSeconds(10), &E2Interface::PollKpmRequests, this);
+}
+
 void
 E2Interface::FunctionServiceSubscriptionCallback(E2AP_PDU_t* sub_req_pdu)
 {
@@ -340,7 +392,9 @@ E2Interface::FunctionServiceSubscriptionCallback(E2AP_PDU_t* sub_req_pdu)
         << ", granularityPeriod="
         << subscription.granularityPeriodMs
         << "ms, measurements="
-        << subscription.measurements.size());
+        << subscription.measurements.size()
+        << ", matchingUes="
+        << subscription.matchingUes.size());
 
     for (const KpmV3MeasurementRequest& measurement :
          subscription.measurements)
@@ -350,6 +404,14 @@ E2Interface::FunctionServiceSubscriptionCallback(E2AP_PDU_t* sub_req_pdu)
             << measurement.name
             << ", noLabel="
             << (measurement.noLabel ? "true" : "false"));
+    }
+
+    for (const KpmV3GnbDuUeRequest& matchingUe :
+         subscription.matchingUes)
+    {
+        NS_LOG_INFO(
+            "[KPM V3] Requested gNB-DU UE: gNB-CU-UE-F1AP-ID="
+            << matchingUe.gnbCuUeF1apId);
     }
 #endif
 
@@ -372,8 +434,8 @@ E2Interface::FunctionServiceSubscriptionCallback(E2AP_PDU_t* sub_req_pdu)
         << ", actionId=" << static_cast<uint32_t>(params.actionId)
         << ", reportingPeriod=" << m_e2Periodicity << "s");
 
-    // Enter the ns-3 simulator thread before manipulating scheduled events.
-    Simulator::ScheduleWithContext(m_netDev->GetNode()->GetId(), Seconds(0), &E2Interface::StartKpmReporting, this);
+    // Request reporting startup through the simulator-thread polling bridge.
+    m_kpmStartRequested.store(true);
 }
 
 /**
@@ -426,9 +488,9 @@ E2Interface::FunctionServiceSubscriptionDeleteCallback(
     // afterward from the ns-3 simulator thread.
     m_kpmSubscriptionActive.store(false);
 
-    // Preserve the gNB node context when moving work from the E2Sim receiver
-    // thread into the ns-3 simulator thread.
-    Simulator::ScheduleWithContext(m_netDev->GetNode()->GetId(), Seconds(0), &E2Interface::StopKpmReporting, this);
+    // Request report cancellation through the simulator-thread polling
+    // bridge.
+    m_kpmStopRequested.store(true);
 
     NS_LOG_INFO(
         "[KPM] Subscription deactivated: requestorId="

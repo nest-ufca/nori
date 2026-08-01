@@ -96,6 +96,13 @@ class E2Interface : public Object
     void StopKpmReporting();
 
     /**
+     * Start the simulator-thread polling bridge for external KPM requests.
+     *
+     * This method must be called before Simulator::Run().
+     */
+    void StartKpmRequestPolling();
+
+    /**
      * @brief Report the number of TX PDU calls
      * @param rnti the current Radio network temporary identifier
      * @param lcid the current cell identifier
@@ -169,11 +176,25 @@ class E2Interface : public Object
     Ptr<KpmIndicationMessage> BuildRicIndicationMessageDu(std::string plmId, uint16_t nrCellId);
 
     /**
+     * Process KPM start and stop requests received by the E2Sim thread.
+     *
+     * The method runs exclusively in the ns-3 simulator thread and
+     * reschedules itself periodically.
+     */
+    void PollKpmRequests();
+
+    /**
      * @brief Function to help us to flip the map
      * @param src the source map
      * @return the flipped map
      */
     std::multimap<long double, uint16_t> FlipMap(const std::map<uint16_t, long double>& src);
+
+    // Requests written by the E2Sim receiver thread and consumed by the
+    // simulator-thread polling bridge.
+    std::atomic_bool m_kpmStartRequested{false};
+    std::atomic_bool m_kpmStopRequested{false};
+    EventId m_kpmRequestPollEvent;
 
     // State of the single KPM subscription currently managed by this
     // E2Interface instance.
