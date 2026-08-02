@@ -73,6 +73,49 @@ struct KpmV3DecodeResult
 };
 
 /**
+ * Measurements collected for one gNB-DU UE in a Style 5 indication.
+ *
+ * The values use the same order as the measurementNames vector carried by
+ * KpmV3Style5Indication.
+ */
+struct KpmV3Style5UeReport
+{
+    uint64_t gnbCuUeF1apId{0};
+    std::vector<uint64_t> measurementValues;
+};
+
+/**
+ * Plain C++ input used to build one KPM Style 5 indication.
+ *
+ * The codec converts collectStartTimeUnixNanoseconds into the eight-byte NTP
+ * timestamp required by the KPM Indication Header.
+ */
+struct KpmV3Style5Indication
+{
+    uint64_t collectStartTimeUnixNanoseconds{0};
+    uint32_t granularityPeriodMs{0};
+
+    std::vector<std::string> measurementNames;
+    std::vector<KpmV3Style5UeReport> ueReports;
+};
+
+/**
+ * Encoded KPM Indication Header and Indication Message.
+ *
+ * Encoding failures are returned to the caller without terminating the
+ * simulator.
+ */
+struct KpmV3EncodeResult
+{
+    bool success{false};
+
+    std::vector<uint8_t> indicationHeader;
+    std::vector<uint8_t> indicationMessage;
+
+    std::string errorMessage;
+};
+
+/**
  * Decode the Event Trigger Definition and Action Definition of one KPM
  * subscription request.
  *
@@ -93,6 +136,20 @@ DecodeKpmV3Subscription(
     std::size_t eventTriggerSize,
     const uint8_t* actionDefinitionData,
     std::size_t actionDefinitionSize);
+
+/**
+ * Encode a KPM Style 5 report using Indication Header Format 1 and
+ * Indication Message Format 3.
+ *
+ * ASN.1-generated types remain private to the isolated codec library.
+ *
+ * \param indication Plain C++ measurements collected for the requested UEs.
+ * \return Encoded header and message, or a descriptive encoding error.
+ */
+NORI_KPM_V3_CODEC_API
+KpmV3EncodeResult
+EncodeKpmV3Style5Indication(
+    const KpmV3Style5Indication& indication);
 
 } // namespace ns3
 

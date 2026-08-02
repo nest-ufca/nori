@@ -3,6 +3,8 @@
 #include "nest/slice-metrics-collector.h"
 #include "nest/slice-controller.h"
 #include "ns3/E2-term-helper.h"
+#include "ns3/E2-interface.h"
+#include "ns3/nr-ue-net-device.h"
 #include "ns3/applications-module.h"
 #include "ns3/core-module.h"
 #include "ns3/flow-monitor-module.h"
@@ -315,6 +317,12 @@ int main(int argc, char* argv[])
     // Map each UE to its slice and traffic type (for post-processing)
     std::vector<int> ueSliceId(ueNum, -1);
     std::vector<std::string> ueSliceTrafficType(ueNum, "");
+
+    // KPM exposes a stable synthetic F1AP ID for every simulated UE while
+    // retaining the actual ns-3 IMSI and configured slice SST internally.
+    std::vector<KpmGnbDuUeContext> kpmGnbDuUeContexts;
+
+    kpmGnbDuUeContexts.reserve(ueNum);
 
     if (e2Config.enabled && e2Config.realtime)
     {
@@ -693,6 +701,30 @@ int main(int argc, char* argv[])
             ueSliceId[nodeIdx] = static_cast<int>(sliceId);
             ueSliceTrafficType[nodeIdx] = resolvedTrafficType;
 
+            if (e2Config.enabled)
+            {
+                Ptr<NrUeNetDevice> ueNetDevice = DynamicCast<NrUeNetDevice>(ueDevs.Get(nodeIdx));
+
+                NS_ABORT_MSG_UNLESS(ueNetDevice, "Could not cast UE device to NrUeNetDevice");
+
+                KpmGnbDuUeContext kpmUeContext;
+
+                // The portable xApp addresses simulated UEs by their
+                // zero-based scenario index. The mapping keeps this external
+                // identity separate from the ns-3 IMSI.
+                kpmUeContext.gnbCuUeF1apId = nodeIdx;
+                kpmUeContext.imsi = ueNetDevice->GetImsi();
+                kpmUeContext.sst = sstPerSlice.at(sliceId);
+
+                kpmGnbDuUeContexts.push_back(kpmUeContext);
+
+                NS_LOG_INFO(
+                    "[KPM V3] UE context: gNB-CU-UE-F1AP-ID="
+                    << kpmUeContext.gnbCuUeF1apId
+                    << ", IMSI=" << kpmUeContext.imsi
+                    << ", SST=" << static_cast<uint32_t>(kpmUeContext.sst));
+            }
+
             // Debug: downlink traffic remoteHost -> UE
             NS_LOG_INFO("DEBUG DL for UE[" << nodeIdx << "] (" << ueAddr
                         << "): port " << port << " type " << resolvedTrafficType);
@@ -718,6 +750,20 @@ int main(int argc, char* argv[])
                               << "s, stop="
                               << simTime
                               << "s");
+        }
+    }
+
+    if (e2Config.enabled)
+    {
+        NS_ABORT_MSG_UNLESS(kpmGnbDuUeContexts.size() == ueNum, "KPM UE context count does not match the scenario UE count");
+
+        for (uint32_t gNbIndex = 0; gNbIndex < gNbDevs.GetN(); ++gNbIndex)
+        {
+            Ptr<E2Interface> e2Interface = gNbDevs.Get(gNbIndex)->GetObject<E2Interface>();
+
+            NS_ABORT_MSG_UNLESS(e2Interface, "Could not obtain the E2Interface from the gNB");
+
+            e2Interface->SetKpmGnbDuUeContexts(kpmGnbDuUeContexts);
         }
     }
 

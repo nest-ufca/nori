@@ -4,6 +4,7 @@
 
 #ifdef NORI_ENABLE_KPM_V3_CODEC
 #include "kpm-subscription-parser.h"
+#include "kpm-v3-codec.h"
 #endif
 
 #include "kpm-indication.h"
@@ -33,7 +34,12 @@
 #include "ns3/node.h"
 
 #include <encode_e2apv1.hpp>
+
+#include <set>
 #include <stdexcept>
+#include <chrono>
+#include <cmath>
+#include <limits>
 
 namespace ns3
 {
@@ -130,6 +136,184 @@ E2Interface::RegisterNewSinrReadingCallback([[maybe_unused]] std::string path,
     }
 }
 
+/**
+ * Collect, encode and send one KPM v3 Style 5 indication.
+ *
+ * The requested F1AP IDs are resolved to their ns-3 IMSIs and current RNTIs.
+ * RLC TX bytes collected during the reporting interval are converted to
+ * integer kbps, while the configured SST is reported as an integer.
+ */
+bool
+E2Interface::BuildAndSendKpmV3Style5Report()
+{
+    NS_LOG_FUNCTION(this);
+
+    if (m_kpmReportingPeriodMs == 0)
+    {
+        NS_LOG_ERROR("[KPM V3] Cannot build a Style 5 report with a zero reporting period");
+        return false;
+    }
+
+    ObjectMapValue ueManager;
+    m_rrc->GetAttribute("UeMap", ueManager);
+
+    std::map<uint64_t, uint16_t> rntiByImsi;
+
+    for (auto ueObject = ueManager.Begin(); ueObject != ueManager.End(); ++ueObject)
+    {
+        Ptr<NrUeManager> ue = DynamicCast<NrUeManager>(ueObject->second);
+
+        if (ue != nullptr)
+        {
+            rntiByImsi.emplace(ue->GetImsi(), ue->GetRnti());
+        }
+    }
+
+    KpmV3Style5Indication indication;
+
+    const auto unixNanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    if (unixNanoseconds < 0)
+    {
+        NS_LOG_ERROR("[KPM V3] System clock is before the Unix epoch");
+        return false;
+    }
+
+    indication.collectStartTimeUnixNanoseconds = static_cast<uint64_t>(unixNanoseconds);
+    indication.granularityPeriodMs = m_kpmGranularityPeriodMs;
+    indication.measurementNames = m_kpmMeasurementNames;
+    indication.ueReports.reserve(m_kpmMatchingGnbCuUeF1apIds.size());
+
+    std::set<uint16_t> rntisToReset;
+
+    for (uint64_t f1apId : m_kpmMatchingGnbCuUeF1apIds)
+    {
+        const auto contextIterator = m_kpmGnbDuUeContexts.find(f1apId);
+
+        if (contextIterator == m_kpmGnbDuUeContexts.end())
+        {
+            NS_LOG_ERROR("[KPM V3] No simulated UE context exists for gNB-CU UE F1AP ID " << f1apId);
+            return false;
+        }
+
+        const KpmGnbDuUeContext& context = contextIterator->second;
+        const auto rntiIterator = rntiByImsi.find(context.imsi);
+
+        if (rntiIterator == rntiByImsi.end())
+        {
+            NS_LOG_ERROR("[KPM V3] IMSI " << context.imsi
+                                          << " for gNB-CU UE F1AP ID " << f1apId
+                                          << " is not connected to the gNB");
+            return false;
+        }
+
+        const uint16_t rnti = rntiIterator->second;
+        const uint64_t txBytes = m_txPDUBytes[rnti];
+
+        const long double bitrateKbps =
+            (static_cast<long double>(txBytes) * 8.0L) /
+            static_cast<long double>(m_kpmReportingPeriodMs);
+
+        if (!std::isfinite(bitrateKbps) ||
+            bitrateKbps < 0.0L ||
+            bitrateKbps > static_cast<long double>(std::numeric_limits<uint64_t>::max()))
+        {
+            NS_LOG_ERROR("[KPM V3] Computed RLC bitrate is outside the supported range");
+            return false;
+        }
+
+        const uint64_t roundedBitrateKbps =
+            static_cast<uint64_t>(std::llround(bitrateKbps));
+
+        KpmV3Style5UeReport ueReport;
+        ueReport.gnbCuUeF1apId = f1apId;
+        ueReport.measurementValues.reserve(m_kpmMeasurementNames.size());
+
+        for (const std::string& measurementName : m_kpmMeasurementNames)
+        {
+            if (measurementName == "NEST.RLC.TxPduBitrateDl.UEID")
+            {
+                ueReport.measurementValues.push_back(roundedBitrateKbps);
+            }
+            else if (measurementName == "DRB.NetworkSlicing.SST.UEID")
+            {
+                ueReport.measurementValues.push_back(context.sst);
+            }
+            else
+            {
+                NS_LOG_ERROR("[KPM V3] Cannot produce unsupported measurement " << measurementName);
+                return false;
+            }
+        }
+
+        indication.ueReports.push_back(std::move(ueReport));
+        rntisToReset.insert(rnti);
+
+        NS_LOG_INFO("[KPM V3] UE report: gNB-CU-UE-F1AP-ID=" << f1apId
+                                                             << ", IMSI=" << context.imsi
+                                                             << ", RNTI=" << rnti
+                                                             << ", bitrate=" << roundedBitrateKbps
+                                                             << "kbps, SST="
+                                                             << static_cast<uint32_t>(context.sst));
+    }
+
+    KpmV3EncodeResult encodedIndication = EncodeKpmV3Style5Indication(indication);
+
+    if (!encodedIndication.success)
+    {
+        NS_LOG_ERROR("[KPM V3] Could not encode Style 5 indication: "
+                     << encodedIndication.errorMessage);
+        return false;
+    }
+
+    if (encodedIndication.indicationHeader.size() >
+            static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        encodedIndication.indicationMessage.size() >
+            static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    {
+        NS_LOG_ERROR("[KPM V3] Encoded indication exceeds the E2Sim size range");
+        return false;
+    }
+
+    auto* indicationPdu = new E2AP_PDU{};
+
+    const uint32_t sequenceNumber = ++m_kpmIndicationSequenceNumber;
+
+    encoding::generate_e2apv1_indication_request_parameterized(
+        indicationPdu,
+        m_kpmSubscriptionParams.requestorId,
+        m_kpmSubscriptionParams.instanceId,
+        m_kpmSubscriptionParams.ranFuncionId,
+        m_kpmSubscriptionParams.actionId,
+        sequenceNumber,
+        encodedIndication.indicationHeader.data(),
+        static_cast<int>(encodedIndication.indicationHeader.size()),
+        encodedIndication.indicationMessage.data(),
+        static_cast<int>(encodedIndication.indicationMessage.size()));
+
+    m_e2term->SendE2Message(indicationPdu);
+    delete indicationPdu;
+
+    for (uint16_t rnti : rntisToReset)
+    {
+        m_txPDU[rnti] = 0;
+        m_txPDUBytes[rnti] = 0;
+    }
+
+    NS_LOG_INFO("[KPM V3] Sent Style 5 indication: sequenceNumber=" << sequenceNumber
+                                                                   << ", UEs="
+                                                                   << indication.ueReports.size()
+                                                                   << ", measurements="
+                                                                   << indication.measurementNames.size()
+                                                                   << ", headerBytes="
+                                                                   << encodedIndication.indicationHeader.size()
+                                                                   << ", messageBytes="
+                                                                   << encodedIndication.indicationMessage.size());
+
+    return true;
+}
+
 void
 E2Interface::BuildAndSendReportMessage()
 {
@@ -142,6 +326,23 @@ E2Interface::BuildAndSendReportMessage()
     }
 
     NS_LOG_DEBUG("[KPM] Building periodic report at t=" << Simulator::Now().GetSeconds() << "s");
+
+#ifdef NORI_ENABLE_KPM_V3_CODEC
+    if (m_kpmReportStyle == 5)
+    {
+        if (!BuildAndSendKpmV3Style5Report())
+        {
+            NS_LOG_ERROR("[KPM V3] Style 5 periodic report was not sent");
+        }
+
+        if (m_kpmSubscriptionActive.load())
+        {
+            m_kpmReportEvent = Simulator::Schedule(Seconds(m_e2Periodicity), &E2Interface::BuildAndSendReportMessage, this);
+        }
+
+        return;
+    }
+#endif
 
     const E2Termination::RicSubscriptionRequest_rval_s params = m_kpmSubscriptionParams;
 
@@ -276,12 +477,23 @@ E2Interface::StartKpmReporting()
         Simulator::Cancel(m_kpmReportEvent);
     }
 
-    NS_LOG_INFO(
-        "[KPM] Starting periodic reporting at t="
-        << Simulator::Now().GetSeconds()
-        << "s");
+    NS_LOG_INFO("[KPM] Starting periodic reporting at t=" << Simulator::Now().GetSeconds() << "s");
 
-    BuildAndSendReportMessage();
+    // Discard bytes collected before the subscription became active. The
+    // first indication must represent one complete reporting interval.
+    for (auto& txPduEntry : m_txPDU)
+    {
+        txPduEntry.second = 0;
+    }
+
+    for (auto& txPduBytesEntry : m_txPDUBytes)
+    {
+        txPduBytesEntry.second = 0;
+    }
+
+    m_kpmReportEvent = Simulator::Schedule(Seconds(m_e2Periodicity), &E2Interface::BuildAndSendReportMessage, this);
+
+    NS_LOG_INFO("[KPM] First periodic report scheduled for t=" << (Simulator::Now() + Seconds(m_e2Periodicity)).GetSeconds() << "s");
 }
 
 /**
@@ -320,6 +532,65 @@ E2Interface::StartKpmRequestPolling()
     }
 
     m_kpmRequestPollEvent = Simulator::ScheduleNow(&E2Interface::PollKpmRequests, this);
+}
+
+/**
+ * Configure the simulated gNB-DU UE identities exposed through KPM.
+ *
+ * The configuration is installed before Simulator::Run(), so the resulting
+ * map remains stable while periodic reports are generated.
+ */
+void
+E2Interface::SetKpmGnbDuUeContexts(
+    const std::vector<KpmGnbDuUeContext>& contexts)
+{
+    NS_LOG_FUNCTION(this << contexts.size());
+
+    NS_ABORT_MSG_IF(
+        contexts.empty(),
+        "KPM gNB-DU UE context list must not be empty");
+
+    std::map<uint64_t, KpmGnbDuUeContext>
+        validatedContexts;
+
+    std::set<uint64_t> configuredImsis;
+
+    for (const KpmGnbDuUeContext& context :
+         contexts)
+    {
+        NS_ABORT_MSG_IF(
+            context.imsi == 0,
+            "KPM gNB-DU UE context contains an invalid IMSI");
+
+        const bool f1apIdInserted =
+            validatedContexts
+                .emplace(
+                    context.gnbCuUeF1apId,
+                    context)
+                .second;
+
+        NS_ABORT_MSG_IF(
+            !f1apIdInserted,
+            "KPM gNB-DU UE context contains a duplicate "
+            "gNB-CU UE F1AP ID");
+
+        const bool imsiInserted =
+            configuredImsis
+                .insert(context.imsi)
+                .second;
+
+        NS_ABORT_MSG_IF(
+            !imsiInserted,
+            "KPM gNB-DU UE context contains a duplicate IMSI");
+    }
+
+    m_kpmGnbDuUeContexts =
+        validatedContexts;
+
+    NS_LOG_INFO(
+        "[KPM V3] Configured "
+        << m_kpmGnbDuUeContexts.size()
+        << " simulated gNB-DU UE contexts");
 }
 
 /**
@@ -413,6 +684,90 @@ E2Interface::FunctionServiceSubscriptionCallback(E2AP_PDU_t* sub_req_pdu)
             "[KPM V3] Requested gNB-DU UE: gNB-CU-UE-F1AP-ID="
             << matchingUe.gnbCuUeF1apId);
     }
+
+    if (subscription.reportStyle == 5)
+    {
+        std::set<std::string>
+            requestedMeasurementNames;
+
+        for (const KpmV3MeasurementRequest& measurement :
+             subscription.measurements)
+        {
+            const bool measurementSupported = measurement.name == "NEST.RLC.TxPduBitrateDl.UEID" || measurement.name == "DRB.NetworkSlicing.SST.UEID";
+
+            if (!measurementSupported)
+            {
+                NS_LOG_ERROR("[KPM V3] Style 5 measurement is not supported: " << measurement.name);
+
+                return;
+            }
+
+            if (!requestedMeasurementNames.insert(measurement.name).second)
+            {
+                NS_LOG_ERROR("[KPM V3] Style 5 contains a duplicate measurement: " << measurement.name);
+
+                return;
+            }
+        }
+
+        std::set<uint64_t> requestedF1apIds;
+
+        for (const KpmV3GnbDuUeRequest& matchingUe :
+             subscription.matchingUes)
+        {
+            if (!requestedF1apIds
+                     .insert(
+                         matchingUe.gnbCuUeF1apId)
+                     .second)
+            {
+                NS_LOG_ERROR(
+                    "[KPM V3] Style 5 contains a duplicate "
+                    "gNB-CU UE F1AP ID: "
+                    << matchingUe.gnbCuUeF1apId);
+
+                return;
+            }
+
+            if (m_kpmGnbDuUeContexts.find(
+                    matchingUe.gnbCuUeF1apId) ==
+                m_kpmGnbDuUeContexts.end())
+            {
+                NS_LOG_ERROR(
+                    "[KPM V3] Style 5 requested an unknown "
+                    "gNB-CU UE F1AP ID: "
+                    << matchingUe.gnbCuUeF1apId);
+
+                return;
+            }
+        }
+    }
+
+    // Retain only plain C++ subscription data for the simulator-thread
+    // periodic report builder.
+    m_kpmReportStyle = subscription.reportStyle;
+
+    m_kpmReportingPeriodMs = subscription.reportingPeriodMs;
+
+    m_kpmGranularityPeriodMs = subscription.granularityPeriodMs;
+
+    m_kpmMeasurementNames.clear();
+    m_kpmMeasurementNames.reserve(subscription.measurements.size());
+
+    for (const KpmV3MeasurementRequest& measurement : subscription.measurements)
+    {
+        m_kpmMeasurementNames.push_back(measurement.name);
+    }
+
+    m_kpmMatchingGnbCuUeF1apIds.clear();
+    m_kpmMatchingGnbCuUeF1apIds.reserve(subscription.matchingUes.size());
+
+    for (const KpmV3GnbDuUeRequest& matchingUe : subscription.matchingUes)
+    {
+        m_kpmMatchingGnbCuUeF1apIds.push_back(matchingUe.gnbCuUeF1apId);
+    }
+
+    m_kpmIndicationSequenceNumber = 0;
+
 #endif
 
     E2Termination::RicSubscriptionRequest_rval_s params = m_e2term->ProcessRicSubscriptionRequest(sub_req_pdu);
@@ -1400,9 +1755,7 @@ E2Interface::FlipMap(const std::map<uint16_t, long double>& src)
 }
 
 Ptr<KpmIndicationHeader>
-E2Interface ::BuildRicIndicationHeader(std::string plmId,
-                                       std::string gnbId,
-                                       uint16_t nrCellId) const
+E2Interface ::BuildRicIndicationHeader(std::string plmId, std::string gnbId, uint16_t nrCellId) const
 {
     // if (!m_forceE2FileLogging)
     //{

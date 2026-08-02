@@ -1,6 +1,10 @@
 #pragma once
 
 #include <atomic>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
 
 #include "E2-report.h"
 #include "encode_e2apv1.hpp"
@@ -16,6 +20,20 @@ namespace ns3
 class NoriE2Report;
 
 typedef std::pair<uint64_t, uint16_t> ImsiCellIdPair_t;
+
+/**
+ * Identity and slice information of one simulated gNB-DU UE.
+ *
+ * The explicit mapping avoids assuming that a gNB-CU UE F1AP ID is equal to
+ * an ns-3 IMSI. The scenario defines the synthetic F1AP identity exposed
+ * through KPM and associates it with the corresponding simulated UE.
+ */
+struct KpmGnbDuUeContext
+{
+    uint64_t gnbCuUeF1apId{0};
+    uint64_t imsi{0};
+    uint8_t sst{0};
+};
 
 class E2Interface : public Object
 {
@@ -103,6 +121,14 @@ class E2Interface : public Object
     void StartKpmRequestPolling();
 
     /**
+     * Configure the simulated gNB-DU UE identities exposed through KPM.
+     *
+     * @param contexts mapping between F1AP identities, ns-3 IMSIs and SSTs
+     */
+    void SetKpmGnbDuUeContexts(
+        const std::vector<KpmGnbDuUeContext>& contexts);
+
+    /**
      * @brief Report the number of TX PDU calls
      * @param rnti the current Radio network temporary identifier
      * @param lcid the current cell identifier
@@ -133,6 +159,13 @@ class E2Interface : public Object
     void MLSliceInterface(double macPrb, uint64_t imsi);
 
   private:
+    /**
+     * Collect, encode and send one KPM v3 Style 5 indication.
+     *
+     * @return true when the indication was encoded and sent successfully
+     */
+    bool BuildAndSendKpmV3Style5Report();
+
     /**
      * @brief Build RIC Indication Header
      * @param plmId PLMN ID
@@ -190,6 +223,10 @@ class E2Interface : public Object
      */
     std::multimap<long double, uint16_t> FlipMap(const std::map<uint16_t, long double>& src);
 
+    // Explicit mapping from the synthetic gNB-CU UE F1AP ID exposed to the
+    // xApp to the corresponding ns-3 IMSI and configured slice SST.
+    std::map<uint64_t, KpmGnbDuUeContext> m_kpmGnbDuUeContexts;
+
     // Requests written by the E2Sim receiver thread and consumed by the
     // simulator-thread polling bridge.
     std::atomic_bool m_kpmStartRequested{false};
@@ -201,6 +238,19 @@ class E2Interface : public Object
     std::atomic_bool m_kpmSubscriptionActive{false};
     E2Termination::RicSubscriptionRequest_rval_s m_kpmSubscriptionParams{};
     EventId m_kpmReportEvent;
+
+    // KPM v3 measurement selection copied from the accepted Action
+    // Definition. Plain C++ values keep generated ASN.1 types outside this
+    // public interface.
+    uint32_t m_kpmReportStyle{0};
+    uint32_t m_kpmReportingPeriodMs{0};
+    uint32_t m_kpmGranularityPeriodMs{0};
+
+    std::vector<std::string> m_kpmMeasurementNames;
+
+    std::vector<uint64_t> m_kpmMatchingGnbCuUeF1apIds;
+
+    uint32_t m_kpmIndicationSequenceNumber{0};
 
     double m_e2Periodicity;                                          //<! E2 periodicity
     Ptr<NrGnbRrc> m_rrc;                                             //<! RRC object

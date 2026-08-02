@@ -1,25 +1,43 @@
 #include "kpm-v3-codec.h"
 
 #include "E2SM-KPM-ActionDefinition-Format1.h"
+#include "E2SM-KPM-ActionDefinition-Format5.h"
 #include "E2SM-KPM-ActionDefinition.h"
-#include "LabelInfoItem.h"
-#include "MeasurementInfoItem.h"
 #include "E2SM-KPM-EventTriggerDefinition-Format1.h"
 #include "E2SM-KPM-EventTriggerDefinition.h"
-#include "E2SM-KPM-ActionDefinition-Format5.h"
-#include "MatchingUEidPerSubItem.h"
-#include "UEID-GNB-DU.h"
-#include "aper_decoder.h"
+#include "E2SM-KPM-IndicationHeader-Format1.h"
+#include "E2SM-KPM-IndicationHeader.h"
+#include "E2SM-KPM-IndicationMessage-Format1.h"
+#include "E2SM-KPM-IndicationMessage-Format3.h"
+#include "E2SM-KPM-IndicationMessage.h"
+#include "LabelInfoItem.h"
 #include "LabelInfoList.h"
+#include "MatchingUEidPerSubItem.h"
+#include "MatchingUEidPerSubList.h"
+#include "MeasurementData.h"
+#include "MeasurementDataItem.h"
+#include "MeasurementInfoItem.h"
 #include "MeasurementInfoList.h"
 #include "MeasurementLabel.h"
+#include "MeasurementRecord.h"
+#include "MeasurementRecordItem.h"
 #include "MeasurementType.h"
 #include "MeasurementTypeName.h"
-#include "MatchingUEidPerSubList.h"
+#include "OCTET_STRING.h"
+#include "TimeStamp.h"
+#include "UEID-GNB-DU.h"
 #include "UEID.h"
+#include "UEMeasurementReportItem.h"
+#include "UEMeasurementReportList.h"
+#include "aper_decoder.h"
+#include "aper_encoder.h"
 
+#include <array>
+#include <cstdlib>
 #include <limits>
 #include <memory>
+#include <set>
+#include <utility>
 #include <utility>
 
 namespace ns3
@@ -83,6 +101,668 @@ using ActionDefinitionPtr =
     std::unique_ptr<
         E2SM_KPM_ActionDefinition_t,
         decltype(&FreeActionDefinition)>;
+
+/**
+ * Build a failed encoding result without terminating the simulator.
+ */
+KpmV3EncodeResult
+MakeEncodeError(const std::string& message)
+{
+    KpmV3EncodeResult result;
+    result.errorMessage = message;
+    return result;
+}
+
+/**
+ * Release an Indication Header allocated by the KPM v3 encoder.
+ */
+void
+FreeIndicationHeader(
+    E2SM_KPM_IndicationHeader_t* header)
+{
+    if (header != nullptr)
+    {
+        ASN_STRUCT_FREE(
+            asn_DEF_E2SM_KPM_IndicationHeader,
+            header);
+    }
+}
+
+using IndicationHeaderPtr =
+    std::unique_ptr<
+        E2SM_KPM_IndicationHeader_t,
+        decltype(&FreeIndicationHeader)>;
+
+/**
+ * Release an Indication Message allocated by the KPM v3 encoder.
+ */
+void
+FreeIndicationMessage(
+    E2SM_KPM_IndicationMessage_t* message)
+{
+    if (message != nullptr)
+    {
+        ASN_STRUCT_FREE(
+            asn_DEF_E2SM_KPM_IndicationMessage,
+            message);
+    }
+}
+
+using IndicationMessagePtr =
+    std::unique_ptr<
+        E2SM_KPM_IndicationMessage_t,
+        decltype(&FreeIndicationMessage)>;
+
+/**
+ * Encode one ASN.1 structure into a newly allocated APER byte buffer.
+ *
+ * The temporary ASN.1 buffer is copied into a C++ vector and released before
+ * returning to the caller.
+ */
+bool
+EncodeAsnStructure(
+    const asn_TYPE_descriptor_t& descriptor,
+    const void* structure,
+    const std::string& structureName,
+    std::vector<uint8_t>& encodedBytes,
+    std::string& errorMessage)
+{
+    void* encodedBuffer = nullptr;
+
+    const ssize_t encodedSize =
+        aper_encode_to_new_buffer(
+            &descriptor,
+            nullptr,
+            structure,
+            &encodedBuffer);
+
+    if (encodedSize <= 0 ||
+        encodedBuffer == nullptr)
+    {
+        std::free(encodedBuffer);
+
+        errorMessage =
+            "Could not encode the KPM " +
+            structureName;
+
+        return false;
+    }
+
+    const auto* firstByte =
+        static_cast<const uint8_t*>(
+            encodedBuffer);
+
+    encodedBytes.assign(
+        firstByte,
+        firstByte +
+            static_cast<std::size_t>(
+                encodedSize));
+
+    std::free(encodedBuffer);
+    return true;
+}
+
+/**
+ * Convert Unix time in nanoseconds into the 64-bit NTP timestamp carried by
+ * the KPM Indication Header.
+ *
+ * The upper 32 bits contain seconds since 1900 and the lower 32 bits contain
+ * the fractional part of the second.
+ */
+bool
+FillNtpTimestamp(
+    uint64_t unixNanoseconds,
+    TimeStamp_t& timestamp,
+    std::string& errorMessage)
+{
+    constexpr uint64_t nanosecondsPerSecond =
+        1000000000ULL;
+
+    constexpr uint64_t ntpEpochOffsetSeconds =
+        2208988800ULL;
+
+    const uint64_t unixSeconds =
+        unixNanoseconds /
+        nanosecondsPerSecond;
+
+    const uint64_t remainingNanoseconds =
+        unixNanoseconds %
+        nanosecondsPerSecond;
+
+    if (unixSeconds >
+        std::numeric_limits<uint32_t>::max() -
+            ntpEpochOffsetSeconds)
+    {
+        errorMessage =
+            "KPM collection timestamp is outside the supported NTP era";
+
+        return false;
+    }
+
+    const uint64_t ntpSeconds =
+        unixSeconds +
+        ntpEpochOffsetSeconds;
+
+    const uint64_t ntpFraction =
+        (remainingNanoseconds << 32) /
+        nanosecondsPerSecond;
+
+    uint64_t ntpTimestamp =
+        (ntpSeconds << 32) |
+        ntpFraction;
+
+    std::array<uint8_t, 8> timestampBytes{};
+
+    for (std::size_t index = 0;
+         index < timestampBytes.size();
+         ++index)
+    {
+        timestampBytes[
+            timestampBytes.size() - 1 - index] =
+                static_cast<uint8_t>(
+                    ntpTimestamp & 0xff);
+
+        ntpTimestamp >>= 8;
+    }
+
+    if (OCTET_STRING_fromBuf(
+            &timestamp,
+            reinterpret_cast<const char*>(
+                timestampBytes.data()),
+            static_cast<int>(
+                timestampBytes.size())) != 0)
+    {
+        errorMessage =
+            "Could not allocate the KPM collection timestamp";
+
+        return false;
+    }
+
+    return true;
+}
+
+/**
+ * Build and encode KPM Indication Header Format 1.
+ */
+bool
+EncodeStyle5IndicationHeader(
+    const KpmV3Style5Indication& indication,
+    std::vector<uint8_t>& encodedHeader,
+    std::string& errorMessage)
+{
+    auto* header =
+        static_cast<E2SM_KPM_IndicationHeader_t*>(
+            std::calloc(
+                1,
+                sizeof(E2SM_KPM_IndicationHeader_t)));
+
+    if (header == nullptr)
+    {
+        errorMessage =
+            "Could not allocate the KPM Indication Header";
+
+        return false;
+    }
+
+    IndicationHeaderPtr headerHolder(
+        header,
+        &FreeIndicationHeader);
+
+    auto* format1 =
+        static_cast<
+            E2SM_KPM_IndicationHeader_Format1_t*>(
+                std::calloc(
+                    1,
+                    sizeof(
+                        E2SM_KPM_IndicationHeader_Format1_t)));
+
+    if (format1 == nullptr)
+    {
+        errorMessage =
+            "Could not allocate KPM Indication Header Format 1";
+
+        return false;
+    }
+
+    header->indicationHeader_formats.present =
+        E2SM_KPM_IndicationHeader__indicationHeader_formats_PR_indicationHeader_Format1;
+
+    header->indicationHeader_formats.choice
+        .indicationHeader_Format1 =
+            format1;
+
+    if (!FillNtpTimestamp(
+            indication.collectStartTimeUnixNanoseconds,
+            format1->colletStartTime,
+            errorMessage))
+    {
+        return false;
+    }
+
+    return EncodeAsnStructure(
+        asn_DEF_E2SM_KPM_IndicationHeader,
+        header,
+        "Indication Header",
+        encodedHeader,
+        errorMessage);
+}
+
+/**
+ * Allocate and zero-initialize one generated ASN.1 structure.
+ */
+template <typename Structure>
+Structure*
+AllocateAsnStructure(
+    const std::string& structureName,
+    std::string& errorMessage)
+{
+    auto* structure =
+        static_cast<Structure*>(
+            std::calloc(
+                1,
+                sizeof(Structure)));
+
+    if (structure == nullptr)
+    {
+        errorMessage =
+            "Could not allocate KPM " +
+            structureName;
+    }
+
+    return structure;
+}
+
+/**
+ * Populate the measurement names and noLabel labels carried by one UE
+ * measurement report.
+ */
+bool
+PopulateMeasurementInfoList(
+    MeasurementInfoList_t* measurementInfoList,
+    const std::vector<std::string>& measurementNames,
+    std::string& errorMessage)
+{
+    for (const std::string& measurementName :
+         measurementNames)
+    {
+        auto* measurementInfo =
+            AllocateAsnStructure<MeasurementInfoItem_t>(
+                "MeasurementInfoItem",
+                errorMessage);
+
+        if (measurementInfo == nullptr)
+        {
+            return false;
+        }
+
+        if (ASN_SEQUENCE_ADD(
+                &measurementInfoList->list,
+                measurementInfo) != 0)
+        {
+            std::free(measurementInfo);
+
+            errorMessage =
+                "Could not append a KPM MeasurementInfoItem";
+
+            return false;
+        }
+
+        measurementInfo->measType =
+            AllocateAsnStructure<MeasurementType_t>(
+                "MeasurementType",
+                errorMessage);
+
+        if (measurementInfo->measType == nullptr)
+        {
+            return false;
+        }
+
+        measurementInfo->measType->present =
+            MeasurementType_PR_measName;
+
+        if (OCTET_STRING_fromBuf(
+                &measurementInfo->measType
+                     ->choice.measName,
+                measurementName.data(),
+                static_cast<int>(
+                    measurementName.size())) != 0)
+        {
+            errorMessage =
+                "Could not allocate KPM measurement name " +
+                measurementName;
+
+            return false;
+        }
+
+        measurementInfo->labelInfoList =
+            AllocateAsnStructure<LabelInfoList_t>(
+                "LabelInfoList",
+                errorMessage);
+
+        if (measurementInfo->labelInfoList == nullptr)
+        {
+            return false;
+        }
+
+        auto* labelInfo =
+            AllocateAsnStructure<LabelInfoItem_t>(
+                "LabelInfoItem",
+                errorMessage);
+
+        if (labelInfo == nullptr)
+        {
+            return false;
+        }
+
+        if (ASN_SEQUENCE_ADD(
+                &measurementInfo
+                     ->labelInfoList
+                     ->list,
+                labelInfo) != 0)
+        {
+            std::free(labelInfo);
+
+            errorMessage =
+                "Could not append a KPM LabelInfoItem";
+
+            return false;
+        }
+
+        labelInfo->measLabel =
+            AllocateAsnStructure<MeasurementLabel_t>(
+                "MeasurementLabel",
+                errorMessage);
+
+        if (labelInfo->measLabel == nullptr)
+        {
+            return false;
+        }
+
+        labelInfo->measLabel->noLabel =
+            AllocateAsnStructure<long>(
+                "noLabel value",
+                errorMessage);
+
+        if (labelInfo->measLabel->noLabel == nullptr)
+        {
+            return false;
+        }
+
+        *labelInfo->measLabel->noLabel =
+            MeasurementLabel__noLabel_true;
+    }
+
+    return true;
+}
+
+/**
+ * Append one explicitly selected gNB-DU UE and its measurements to a KPM
+ * Indication Message Format 3 report list.
+ */
+bool
+AppendStyle5UeReport(
+    UEMeasurementReportList_t* ueReportList,
+    const KpmV3Style5Indication& indication,
+    const KpmV3Style5UeReport& ueReport,
+    std::string& errorMessage)
+{
+    auto* reportItem =
+        AllocateAsnStructure<UEMeasurementReportItem_t>(
+            "UEMeasurementReportItem",
+            errorMessage);
+
+    if (reportItem == nullptr)
+    {
+        return false;
+    }
+
+    if (ASN_SEQUENCE_ADD(
+            &ueReportList->list,
+            reportItem) != 0)
+    {
+        std::free(reportItem);
+
+        errorMessage =
+            "Could not append a KPM UE measurement report";
+
+        return false;
+    }
+
+    reportItem->ueID =
+        AllocateAsnStructure<UEID_t>(
+            "UEID",
+            errorMessage);
+
+    if (reportItem->ueID == nullptr)
+    {
+        return false;
+    }
+
+    reportItem->ueID->present =
+        UEID_PR_gNB_DU_UEID;
+
+    reportItem->ueID->choice.gNB_DU_UEID =
+        AllocateAsnStructure<UEID_GNB_DU_t>(
+            "UEID-GNB-DU",
+            errorMessage);
+
+    if (reportItem->ueID
+            ->choice.gNB_DU_UEID == nullptr)
+    {
+        return false;
+    }
+
+    reportItem->ueID
+        ->choice.gNB_DU_UEID
+        ->gNB_CU_UE_F1AP_ID =
+            static_cast<unsigned long>(
+                ueReport.gnbCuUeF1apId);
+
+    reportItem->measReport =
+        AllocateAsnStructure<
+            E2SM_KPM_IndicationMessage_Format1_t>(
+                "Indication Message Format 1",
+                errorMessage);
+
+    if (reportItem->measReport == nullptr)
+    {
+        return false;
+    }
+
+    reportItem->measReport->measData =
+        AllocateAsnStructure<MeasurementData_t>(
+            "MeasurementData",
+            errorMessage);
+
+    if (reportItem->measReport->measData == nullptr)
+    {
+        return false;
+    }
+
+    auto* measurementDataItem =
+        AllocateAsnStructure<MeasurementDataItem_t>(
+            "MeasurementDataItem",
+            errorMessage);
+
+    if (measurementDataItem == nullptr)
+    {
+        return false;
+    }
+
+    if (ASN_SEQUENCE_ADD(
+            &reportItem
+                 ->measReport
+                 ->measData
+                 ->list,
+            measurementDataItem) != 0)
+    {
+        std::free(measurementDataItem);
+
+        errorMessage =
+            "Could not append a KPM MeasurementDataItem";
+
+        return false;
+    }
+
+    measurementDataItem->measRecord =
+        AllocateAsnStructure<MeasurementRecord_t>(
+            "MeasurementRecord",
+            errorMessage);
+
+    if (measurementDataItem->measRecord == nullptr)
+    {
+        return false;
+    }
+
+    for (uint64_t measurementValue :
+         ueReport.measurementValues)
+    {
+        auto* recordItem =
+            AllocateAsnStructure<MeasurementRecordItem_t>(
+                "MeasurementRecordItem",
+                errorMessage);
+
+        if (recordItem == nullptr)
+        {
+            return false;
+        }
+
+        if (ASN_SEQUENCE_ADD(
+                &measurementDataItem
+                     ->measRecord
+                     ->list,
+                recordItem) != 0)
+        {
+            std::free(recordItem);
+
+            errorMessage =
+                "Could not append a KPM MeasurementRecordItem";
+
+            return false;
+        }
+
+        recordItem->present =
+            MeasurementRecordItem_PR_integer;
+
+        recordItem->choice.integer =
+            static_cast<unsigned long>(
+                measurementValue);
+    }
+
+    reportItem->measReport->measInfoList =
+        AllocateAsnStructure<MeasurementInfoList_t>(
+            "MeasurementInfoList",
+            errorMessage);
+
+    if (reportItem->measReport
+            ->measInfoList == nullptr)
+    {
+        return false;
+    }
+
+    if (!PopulateMeasurementInfoList(
+            reportItem->measReport
+                ->measInfoList,
+            indication.measurementNames,
+            errorMessage))
+    {
+        return false;
+    }
+
+    reportItem->measReport->granulPeriod =
+        AllocateAsnStructure<GranularityPeriod_t>(
+            "GranularityPeriod",
+            errorMessage);
+
+    if (reportItem->measReport
+            ->granulPeriod == nullptr)
+    {
+        return false;
+    }
+
+    *reportItem->measReport->granulPeriod =
+        static_cast<GranularityPeriod_t>(
+            indication.granularityPeriodMs);
+
+    return true;
+}
+
+/**
+ * Build and encode KPM Indication Message Format 3.
+ *
+ * Format 3 carries one embedded Format 1 measurement report for every
+ * explicitly selected gNB-DU UE.
+ */
+bool
+EncodeStyle5IndicationMessage(
+    const KpmV3Style5Indication& indication,
+    std::vector<uint8_t>& encodedMessage,
+    std::string& errorMessage)
+{
+    auto* message =
+        AllocateAsnStructure<
+            E2SM_KPM_IndicationMessage_t>(
+                "Indication Message",
+                errorMessage);
+
+    if (message == nullptr)
+    {
+        return false;
+    }
+
+    IndicationMessagePtr messageHolder(
+        message,
+        &FreeIndicationMessage);
+
+    auto* format3 =
+        AllocateAsnStructure<
+            E2SM_KPM_IndicationMessage_Format3_t>(
+                "Indication Message Format 3",
+                errorMessage);
+
+    if (format3 == nullptr)
+    {
+        return false;
+    }
+
+    message->indicationMessage_formats.present =
+        E2SM_KPM_IndicationMessage__indicationMessage_formats_PR_indicationMessage_Format3;
+
+    message->indicationMessage_formats.choice
+        .indicationMessage_Format3 =
+            format3;
+
+    format3->ueMeasReportList =
+        AllocateAsnStructure<
+            UEMeasurementReportList_t>(
+                "UEMeasurementReportList",
+                errorMessage);
+
+    if (format3->ueMeasReportList == nullptr)
+    {
+        return false;
+    }
+
+    for (const KpmV3Style5UeReport& ueReport :
+         indication.ueReports)
+    {
+        if (!AppendStyle5UeReport(
+                format3->ueMeasReportList,
+                indication,
+                ueReport,
+                errorMessage))
+        {
+            return false;
+        }
+    }
+
+    return EncodeAsnStructure(
+        asn_DEF_E2SM_KPM_IndicationMessage,
+        message,
+        "Indication Message",
+        encodedMessage,
+        errorMessage);
+}
 
 /**
  * Decode a KPM Event Trigger Definition Format 1.
@@ -557,6 +1237,121 @@ DecodeKpmV3Subscription(
             result.subscription,
             result.errorMessage))
     {
+        return result;
+    }
+
+    result.success = true;
+    return result;
+}
+
+/**
+ * Validate and encode one KPM Style 5 indication.
+ */
+KpmV3EncodeResult
+EncodeKpmV3Style5Indication(
+    const KpmV3Style5Indication& indication)
+{
+    if (indication.granularityPeriodMs == 0)
+    {
+        return MakeEncodeError(
+            "KPM granularity period must be greater than zero");
+    }
+
+    if (indication.measurementNames.empty())
+    {
+        return MakeEncodeError(
+            "KPM Style 5 indication contains no measurements");
+    }
+
+    if (indication.ueReports.empty())
+    {
+        return MakeEncodeError(
+            "KPM Style 5 indication contains no UE reports");
+    }
+
+    std::set<std::string> uniqueMeasurementNames;
+
+    for (const std::string& measurementName :
+         indication.measurementNames)
+    {
+        if (measurementName.empty())
+        {
+            return MakeEncodeError(
+                "KPM Style 5 indication contains an empty measurement name");
+        }
+
+        if (measurementName.size() >
+            static_cast<std::size_t>(
+                std::numeric_limits<int>::max()))
+        {
+            return MakeEncodeError(
+                "KPM measurement name is too long");
+        }
+
+        if (!uniqueMeasurementNames
+                 .insert(measurementName)
+                 .second)
+        {
+            return MakeEncodeError(
+                "KPM Style 5 indication contains a duplicate measurement name");
+        }
+    }
+
+    std::set<uint64_t> uniqueUeIds;
+
+    for (const KpmV3Style5UeReport& ueReport :
+         indication.ueReports)
+    {
+        if (ueReport.gnbCuUeF1apId >
+            std::numeric_limits<unsigned long>::max())
+        {
+            return MakeEncodeError(
+                "gNB-CU UE F1AP ID is outside the supported range");
+        }
+
+        if (!uniqueUeIds
+                 .insert(ueReport.gnbCuUeF1apId)
+                 .second)
+        {
+            return MakeEncodeError(
+                "KPM Style 5 indication contains a duplicate UE");
+        }
+
+        if (ueReport.measurementValues.size() !=
+            indication.measurementNames.size())
+        {
+            return MakeEncodeError(
+                "KPM UE measurement count does not match the measurement names");
+        }
+
+        for (uint64_t measurementValue :
+             ueReport.measurementValues)
+        {
+            if (measurementValue >
+                std::numeric_limits<unsigned long>::max())
+            {
+                return MakeEncodeError(
+                    "KPM measurement value is outside the supported range");
+            }
+        }
+    }
+
+    KpmV3EncodeResult result;
+
+    if (!EncodeStyle5IndicationHeader(
+            indication,
+            result.indicationHeader,
+            result.errorMessage))
+    {
+        return result;
+    }
+
+    if (!EncodeStyle5IndicationMessage(
+            indication,
+            result.indicationMessage,
+            result.errorMessage))
+    {
+        result.indicationHeader.clear();
         return result;
     }
 
