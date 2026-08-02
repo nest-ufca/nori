@@ -171,16 +171,13 @@ E2Interface::BuildAndSendKpmV3Style5Report()
 
     KpmV3Style5Indication indication;
 
-    const auto unixNanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-
-    if (unixNanoseconds < 0)
+    if (m_kpmCollectStartTimeUnixNanoseconds == 0)
     {
-        NS_LOG_ERROR("[KPM V3] System clock is before the Unix epoch");
+        NS_LOG_ERROR("[KPM V3] Collection window start timestamp is not initialized");
         return false;
     }
 
-    indication.collectStartTimeUnixNanoseconds = static_cast<uint64_t>(unixNanoseconds);
+    indication.collectStartTimeUnixNanoseconds = m_kpmCollectStartTimeUnixNanoseconds;
     indication.granularityPeriodMs = m_kpmGranularityPeriodMs;
     indication.measurementNames = m_kpmMeasurementNames;
     indication.ueReports.reserve(m_kpmMatchingGnbCuUeF1apIds.size());
@@ -300,6 +297,8 @@ E2Interface::BuildAndSendKpmV3Style5Report()
         m_txPDU[rnti] = 0;
         m_txPDUBytes[rnti] = 0;
     }
+
+    m_kpmCollectStartTimeUnixNanoseconds += static_cast<uint64_t>(m_kpmReportingPeriodMs) * 1'000'000ULL;
 
     NS_LOG_INFO("[KPM V3] Sent Style 5 indication: sequenceNumber=" << sequenceNumber
                                                                    << ", UEs="
@@ -491,6 +490,17 @@ E2Interface::StartKpmReporting()
         txPduBytesEntry.second = 0;
     }
 
+    const auto unixNanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+
+    if (unixNanoseconds < 0)
+    {
+        NS_LOG_ERROR("[KPM V3] System clock is before the Unix epoch");
+        return;
+    }
+
+    m_kpmCollectStartTimeUnixNanoseconds = static_cast<uint64_t>(unixNanoseconds);
+
     m_kpmReportEvent = Simulator::Schedule(Seconds(m_e2Periodicity), &E2Interface::BuildAndSendReportMessage, this);
 
     NS_LOG_INFO("[KPM] First periodic report scheduled for t=" << (Simulator::Now() + Seconds(m_e2Periodicity)).GetSeconds() << "s");
@@ -507,7 +517,6 @@ E2Interface::StopKpmReporting()
     if (m_kpmReportEvent.IsPending())
     {
         Simulator::Cancel(m_kpmReportEvent);
-
         NS_LOG_INFO(
             "[KPM] Pending periodic report event cancelled");
     }
@@ -516,6 +525,8 @@ E2Interface::StopKpmReporting()
         NS_LOG_INFO(
             "[KPM] No pending periodic report event to cancel");
     }
+
+    m_kpmCollectStartTimeUnixNanoseconds = 0;
 }
 
 /**

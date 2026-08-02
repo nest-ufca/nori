@@ -251,6 +251,8 @@ class E2Interface : public Object
     std::vector<uint64_t> m_kpmMatchingGnbCuUeF1apIds;
 
     uint32_t m_kpmIndicationSequenceNumber{0};
+    // Absolute timestamp assigned to the beginning of the current simulated KPM collection window.
+    uint64_t m_kpmCollectStartTimeUnixNanoseconds{0};
 
     double m_e2Periodicity;                                          //<! E2 periodicity
     Ptr<NrGnbRrc> m_rrc;                                             //<! RRC object
