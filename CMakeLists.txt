@@ -11,6 +11,19 @@ set(
     "Directory containing generated O-RAN SC ASN.1 sources"
 )
 
+option(
+    NORI_ENABLE_RC_V5_CODEC
+    "Build the isolated E2SM-RC v5 codec"
+    OFF
+)
+
+set(
+    NORI_RC_V5_ASN1_DIR
+    "$ENV{NORI_RC_V5_ASN1_DIR}"
+    CACHE PATH
+    "Directory containing generated E2SM-RC v5 ASN.1 sources"
+)
+
 if(NORI_ENABLE_KPM_V3_CODEC)
     if(NOT IS_DIRECTORY "${NORI_KPM_V3_ASN1_DIR}")
         message(
@@ -118,6 +131,108 @@ if(NORI_ENABLE_KPM_V3_CODEC)
     )
 endif()
 
+if(NORI_ENABLE_RC_V5_CODEC)
+    if(NOT IS_DIRECTORY "${NORI_RC_V5_ASN1_DIR}")
+        message(
+            FATAL_ERROR
+            "NORI_RC_V5_ASN1_DIR must point to the generated "
+            "E2SM-RC v5 ASN.1 directory"
+        )
+    endif()
+
+    file(
+        GLOB
+        NORI_RC_V5_ASN1_SOURCES
+        CONFIGURE_DEPENDS
+        "${NORI_RC_V5_ASN1_DIR}/*.c"
+    )
+
+    if(NOT NORI_RC_V5_ASN1_SOURCES)
+        message(
+            FATAL_ERROR
+            "No generated E2SM-RC v5 ASN.1 C sources were found in "
+            "${NORI_RC_V5_ASN1_DIR}"
+        )
+    endif()
+
+    add_library(
+        nori_rc_v5_asn1
+        STATIC
+        ${NORI_RC_V5_ASN1_SOURCES}
+    )
+
+    target_include_directories(
+        nori_rc_v5_asn1
+        PRIVATE
+        "${NORI_RC_V5_ASN1_DIR}"
+    )
+
+    set_target_properties(
+        nori_rc_v5_asn1
+        PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        C_VISIBILITY_PRESET hidden
+    )
+
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(
+            nori_rc_v5_asn1
+            PRIVATE
+            -w
+        )
+    endif()
+
+    add_library(
+        nori_rc_v5_codec
+        SHARED
+        model/rc-v5-codec.cc
+    )
+
+    target_include_directories(
+        nori_rc_v5_codec
+        PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/model"
+        "${NORI_RC_V5_ASN1_DIR}"
+    )
+
+    target_link_libraries(
+        nori_rc_v5_codec
+        PRIVATE
+        nori_rc_v5_asn1
+        m
+    )
+
+    set_target_properties(
+        nori_rc_v5_codec
+        PROPERTIES
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON
+    )
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_link_options(
+            nori_rc_v5_codec
+            PRIVATE
+            "-Wl,--no-undefined"
+            "-Wl,--exclude-libs,ALL"
+        )
+    endif()
+
+    install(
+        TARGETS
+            nori_rc_v5_asn1
+            nori_rc_v5_codec
+        EXPORT
+            ns3ExportTargets
+        ARCHIVE DESTINATION
+            ${CMAKE_INSTALL_LIBDIR}
+        LIBRARY DESTINATION
+            ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION
+            ${CMAKE_INSTALL_BINDIR}
+    )
+endif()
+
 set(nori_optional_libraries)
 
 if(NORI_ENABLE_KPM_V3_CODEC)
@@ -129,6 +244,18 @@ if(NORI_ENABLE_KPM_V3_CODEC)
 
     add_compile_definitions(
         NORI_ENABLE_KPM_V3_CODEC=1
+    )
+endif()
+
+if(NORI_ENABLE_RC_V5_CODEC)
+    list(
+        APPEND
+        nori_optional_libraries
+        nori_rc_v5_codec
+    )
+
+    add_compile_definitions(
+        NORI_ENABLE_RC_V5_CODEC=1
     )
 endif()
 
@@ -156,6 +283,14 @@ if(NORI_ENABLE_KPM_V3_CODEC)
         APPEND
         source_files
         model/kpm-subscription-parser.cc
+    )
+endif()
+
+if(NORI_ENABLE_RC_V5_CODEC)
+    list(
+        APPEND
+        source_files
+        model/rc-v5-control-parser.cc
     )
 endif()
 

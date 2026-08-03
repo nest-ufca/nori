@@ -7,6 +7,10 @@
 #include "kpm-v3-codec.h"
 #endif
 
+#ifdef NORI_ENABLE_RC_V5_CODEC
+#include "rc-v5-control-parser.h"
+#endif
+
 #include "kpm-indication.h"
 #include "oran-interface.h"
 
@@ -637,6 +641,69 @@ E2Interface::PollKpmRequests()
         StartKpmReporting();
     }
 
+#ifdef NORI_ENABLE_RC_V5_CODEC
+    std::optional<RcV5ControlRequest> pendingRcControl;
+
+    {
+        std::lock_guard<std::mutex> lock(m_rcControlMutex);
+
+        if (m_pendingRcControl.has_value())
+        {
+            pendingRcControl = m_pendingRcControl;
+            m_pendingRcControl.reset();
+        }
+    }
+
+    if (pendingRcControl.has_value())
+    {
+        NS_LOG_INFO("[RC V5] Processing queued control request in the simulator thread");
+
+        std::vector<RicControlMessage::SlicePRBQuota> schedulerQuotas;
+        schedulerQuotas.reserve(pendingRcControl->sliceQuotas.size());
+
+        for (const RcV5SliceQuota& quota : pendingRcControl->sliceQuotas)
+        {
+            RicControlMessage::SlicePRBQuota schedulerQuota;
+            schedulerQuota.sliceId = quota.sst;
+            schedulerQuota.maxPRBRatio = static_cast<long>(quota.maxPrbRatio);
+            schedulerQuota.minPRBRatio = static_cast<long>(quota.minPrbRatio);
+            schedulerQuota.dedicatePRBRatio = static_cast<long>(quota.dedicatedPrbRatio);
+            schedulerQuotas.push_back(schedulerQuota);
+
+            NS_LOG_INFO("[RC V5] Queued scheduler quota: SST=" << static_cast<uint32_t>(quota.sst)
+                                                               << ", min=" << quota.minPrbRatio
+                                                               << ", max=" << quota.maxPrbRatio
+                                                               << ", dedicated=" << quota.dedicatedPrbRatio);
+        }
+
+        Ptr<NrGnbNetDevice> gnbNetDevice = DynamicCast<NrGnbNetDevice>(m_netDev);
+
+        if (!gnbNetDevice)
+        {
+            NS_LOG_ERROR("[RC V5] Could not obtain the NR gNB device");
+        }
+        else
+        {
+            Ptr<NrMacScheduler> scheduler = gnbNetDevice->GetScheduler(0);
+            Ptr<NrRLMacSchedulerOfdma> rlScheduler = DynamicCast<NrRLMacSchedulerOfdma>(scheduler);
+
+            if (!rlScheduler)
+            {
+                NS_LOG_ERROR("[RC V5] BWP 0 does not use NrRLMacSchedulerOfdma");
+            }
+            else
+            {
+                rlScheduler->SetSlicingParameters(schedulerQuotas);
+
+                NS_LOG_INFO("[RC V5] Applied Style " << pendingRcControl->controlStyle
+                                                     << ", Action " << pendingRcControl->controlAction
+                                                     << " with " << schedulerQuotas.size()
+                                                     << " slice quotas");
+            }
+        }
+    }
+#endif
+
     m_kpmRequestPollEvent = Simulator::Schedule(MilliSeconds(10), &E2Interface::PollKpmRequests, this);
 }
 
@@ -868,6 +935,61 @@ E2Interface::FunctionServiceSubscriptionDeleteCallback(
 void
 E2Interface::ControlMessageReceivedCallback(E2AP_PDU_t* sub_req_pdu)
 {
+#ifdef NORI_ENABLE_RC_V5_CODEC
+    NS_LOG_DEBUG("[RC V5] Received RIC Control Request");
+
+    const RcV5DecodeResult decodeResult = DecodeRcV5ControlRequest(sub_req_pdu);
+
+    if (!decodeResult.success)
+    {
+        throw std::invalid_argument("RC v5 control request rejected: " + decodeResult.errorMessage);
+    }
+
+    const RcV5ControlRequest& control = decodeResult.control;
+
+    if (m_kpmGnbDuUeContexts.find(control.gnbCuUeF1apId) == m_kpmGnbDuUeContexts.end())
+    {
+        throw std::invalid_argument("RC v5 control request references unknown gNB-CU-UE-F1AP-ID=" + std::to_string(control.gnbCuUeF1apId));
+    }
+
+    std::set<uint8_t> configuredSsts;
+
+    for (const auto& contextEntry : m_kpmGnbDuUeContexts)
+    {
+        configuredSsts.insert(contextEntry.second.sst);
+    }
+
+    std::set<uint8_t> requestedSsts;
+
+    for (const RcV5SliceQuota& quota : control.sliceQuotas)
+    {
+        if (!requestedSsts.insert(quota.sst).second)
+        {
+            throw std::invalid_argument("RC v5 control request contains more than one quota for SST=" + std::to_string(static_cast<uint32_t>(quota.sst)));
+        }
+    }
+
+    if (requestedSsts != configuredSsts)
+    {
+        throw std::invalid_argument("RC v5 control request must contain exactly one quota for every configured SST");
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_rcControlMutex);
+
+        if (m_pendingRcControl.has_value())
+        {
+            throw std::runtime_error("RC v5 control request rejected because another command is pending");
+        }
+
+        m_pendingRcControl = control;
+    }
+
+    NS_LOG_INFO("[RC V5] Control request queued: style=" << control.controlStyle
+                                                        << ", action=" << control.controlAction
+                                                        << ", gNB-CU-UE-F1AP-ID=" << control.gnbCuUeF1apId
+                                                        << ", sliceQuotas=" << control.sliceQuotas.size());
+#else
     NS_LOG_DEBUG("Received RIC Control Message");
 
     Ptr<RicControlMessage> controlMessage = Create<RicControlMessage>(sub_req_pdu);
@@ -937,6 +1059,7 @@ E2Interface::ControlMessageReceivedCallback(E2AP_PDU_t* sub_req_pdu)
         break;
     }
     }
+#endif
 }
 
 void

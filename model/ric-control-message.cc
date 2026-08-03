@@ -118,13 +118,12 @@ RicControlMessage::DecodeRicControlMessage(E2AP_PDU_t* pdu)
 
                 auto *prList = m_e2SmRcControlHeaderFormat1->rrmPolicyList;
 
-                for (size_t i = 0; i < prList->list.count; ++i)
+                for (int i = 0; i < prList->list.count; ++i)
                 {
                     auto *grp = prList->list.array[i];
 
                     uint32_t sliceId = 0;
                     if (grp->rrmPolicy.rrmPolicyMemberList.list.count > 0){
-                        auto *member = grp->rrmPolicy.rrmPolicyMemberList.list.array[0];
                         if (grp->rrmPolicy.rrmPolicyMemberList.list.count > 0) {
                             // Get the slice ID from the first member
                             RRMPolicyMember_t *member =

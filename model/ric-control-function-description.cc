@@ -15,9 +15,10 @@
 
 #include "ric-control-function-description.h"
 
+#ifdef NORI_ENABLE_RC_V5_CODEC
+#include "rc-v5-codec.h"
+#else
 #include "asn1c-types.h"
-
-#include "ns3/log.h"
 
 extern "C"
 {
@@ -25,6 +26,12 @@ extern "C"
 #include "RIC-ControlAction-Item.h"
 #include "RIC-ControlStyle-Item.h"
 }
+#endif
+
+#include "ns3/log.h"
+
+#include <cstdlib>
+#include <cstring>
 
 namespace ns3
 {
@@ -33,16 +40,60 @@ NS_LOG_COMPONENT_DEFINE("RicControlFunctionDescription");
 
 RicControlFunctionDescription::RicControlFunctionDescription()
 {
-    E2SM_RC_RANFunctionDefinition_t* descriptor = new E2SM_RC_RANFunctionDefinition_t();
+#ifdef NORI_ENABLE_RC_V5_CODEC
+    const RcV5FunctionDescriptionResult result =
+        EncodeRcV5FunctionDescription();
+
+    if (!result.success)
+    {
+        NS_FATAL_ERROR(
+            "Could not encode the E2SM-RC v5 RAN Function Definition: "
+            << result.errorMessage);
+    }
+
+    if (result.encodedDefinition.empty())
+    {
+        NS_FATAL_ERROR(
+            "The encoded E2SM-RC v5 RAN Function Definition is empty");
+    }
+
+    m_size = result.encodedDefinition.size();
+    m_buffer = std::calloc(m_size, sizeof(uint8_t));
+
+    if (m_buffer == nullptr)
+    {
+        NS_FATAL_ERROR(
+            "Could not allocate the E2SM-RC v5 RAN Function Definition buffer");
+    }
+
+    std::memcpy(
+        m_buffer,
+        result.encodedDefinition.data(),
+        m_size);
+
+    NS_LOG_INFO(
+        "[RC V5] Encoded RAN Function Definition: bytes="
+        << m_size
+        << ", style=2, action=6");
+#else
+    E2SM_RC_RANFunctionDefinition_t* descriptor =
+        new E2SM_RC_RANFunctionDefinition_t();
+
     FillAndEncodeRCFunctionDescription(descriptor);
-    ASN_STRUCT_FREE_CONTENTS_ONLY(asn_DEF_E2SM_RC_RANFunctionDefinition, descriptor);
+
+    ASN_STRUCT_FREE_CONTENTS_ONLY(
+        asn_DEF_E2SM_RC_RANFunctionDefinition,
+        descriptor);
+
     delete descriptor;
+#endif
 }
 
 RicControlFunctionDescription::~RicControlFunctionDescription()
 {
 }
 
+#ifndef NORI_ENABLE_RC_V5_CODEC
 void
 RicControlFunctionDescription::Encode(E2SM_RC_RANFunctionDefinition_t* descriptor)
 {
@@ -237,4 +288,5 @@ RicControlFunctionDescription::FillAndEncodeRCFunctionDescription(
     NS_LOG_INFO(xer_fprint(stderr, &asn_DEF_E2SM_RC_RANFunctionDefinition, ranfunc_desc));
 }
 
+#endif
 } // namespace ns3

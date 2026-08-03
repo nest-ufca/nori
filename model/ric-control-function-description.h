@@ -19,10 +19,12 @@
 
 #include "ns3/object.h"
 
+#ifndef NORI_ENABLE_RC_V5_CODEC
 extern "C"
 {
 #include "E2SM-RC-RANFunctionDefinition.h"
 }
+#endif
 
 namespace ns3
 {
@@ -34,8 +36,10 @@ class RicControlFunctionDescription : public FunctionDescription
     ~RicControlFunctionDescription();
 
   private:
+#ifndef NORI_ENABLE_RC_V5_CODEC
     void FillAndEncodeRCFunctionDescription(E2SM_RC_RANFunctionDefinition_t* descriptor);
     void Encode(E2SM_RC_RANFunctionDefinition_t* descriptor);
+#endif
 };
 } // namespace ns3
 

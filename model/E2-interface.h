@@ -3,12 +3,18 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "E2-report.h"
 #include "encode_e2apv1.hpp"
 #include "oran-interface.h"
+
+#ifdef NORI_ENABLE_RC_V5_CODEC
+#include "rc-v5-codec.h"
+#endif
 
 #include "ns3/event-id.h"
 #include "ns3/nr-bearer-stats-calculator.h"
@@ -232,6 +238,12 @@ class E2Interface : public Object
     std::atomic_bool m_kpmStartRequested{false};
     std::atomic_bool m_kpmStopRequested{false};
     EventId m_kpmRequestPollEvent;
+
+#ifdef NORI_ENABLE_RC_V5_CODEC
+    // One decoded RC command waiting to be consumed by the ns-3 simulator thread.
+    std::mutex m_rcControlMutex;
+    std::optional<RcV5ControlRequest> m_pendingRcControl;
+#endif
 
     // State of the single KPM subscription currently managed by this
     // E2Interface instance.
