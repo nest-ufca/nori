@@ -23,6 +23,7 @@ endforeach()
 build_lib_example(
     NAME nest-embb-urllc-slicing
     SOURCE_FILES nest-embb-urllc-slicing.cc
+                 nest/mobility-trace.cc
                  nest/slice-metrics-collector.cc
                  nest/slice-controller.cc
                  nest/scenario-config.cc

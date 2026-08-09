@@ -2,13 +2,29 @@
   "_comment": "Configuration file for the nori-embb-urllc-scenario. All values use SI units unless otherwise noted.",
   "controlMode": "none",
   "topology": {
-    "_comment": "NR network topology.",
+    "_comment": "Explicit gNB positions and uniform UE placement use SI units.",
     "numGNb": 1,
-    "distance": 50
+    "gnbPositions": [
+      {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      }
+    ],
+    "uePositionArea": {
+      "mode": "uniform-rectangle",
+      "xMin": -20.0,
+      "xMax": 20.0,
+      "yMin": -20.0,
+      "yMax": 20.0,
+      "height": 0.0
+    }
   },
   "simulation": {
     "_comment": "Global simulation parameters.",
-    "duration": 5
+    "duration": 5,
+    "rngSeed": 1,
+    "rngRun": 1
   },
   "NR": {
     "_comment": "Physical parameters of the NR cell.",

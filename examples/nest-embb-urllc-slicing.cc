@@ -2,6 +2,7 @@
 #include "nest/scenario-config.h"
 #include "nest/slice-metrics-collector.h"
 #include "nest/slice-controller.h"
+#include "nest/mobility-trace.h"
 #include "ns3/E2-term-helper.h"
 #include "ns3/E2-interface.h"
 #include "ns3/nr-ue-net-device.h"
@@ -98,6 +99,10 @@ int main(int argc, char* argv[])
     std::string rbgTraceFilePath;
     std::ofstream rbgTraceStream;
 
+    std::string mobilityTraceFilePath;
+    std::ofstream mobilityTraceStream;
+    double mobilityTraceInterval = 0.1;
+
     std::string sliceMetricsFilePath;
     std::ofstream sliceMetricsStream;
     SliceMetricsCollectorState sliceMetricsState;
@@ -107,119 +112,74 @@ int main(int argc, char* argv[])
 
     CommandLine cmd;
 
-    cmd.AddValue(
-        "configFile",
-        "Path to the scenario configuration file",
-        configFilePath);
+    cmd.AddValue("configFile", "Path to the scenario configuration file", configFilePath);
 
-    cmd.AddValue(
-        "enableRanSlicing",
-        "Enable RAN Slicing with RL scheduler",
-        enableRanSlicing);
+    cmd.AddValue("enableRanSlicing", "Enable RAN Slicing with RL scheduler", enableRanSlicing);
 
-    cmd.AddValue(
-        "enableE2",
-        "Override e2.enabled from JSON; true or false",
-        enableE2Override);
+    cmd.AddValue("enableE2", "Override e2.enabled from JSON; true or false", enableE2Override);
 
-    cmd.AddValue(
-        "ipE2TermRic",
-        "Override e2.termAddress from JSON",
-        ipE2TermRic);
+    cmd.AddValue("ipE2TermRic", "Override e2.termAddress from JSON", ipE2TermRic);
 
-    cmd.AddValue(
-        "e2TermPort",
-        "Override e2.termPort from JSON; zero keeps the JSON value",
-        e2TermPortOverride);
+    cmd.AddValue("e2TermPort", "Override e2.termPort from JSON; zero keeps the JSON value", e2TermPortOverride);
 
-    cmd.AddValue(
-        "e2LocalPortBase",
-        "Override e2.localPortBase from JSON; "
-        "zero keeps the JSON value",
-        e2LocalPortBaseOverride);
+    cmd.AddValue("e2LocalPortBase", "Override e2.localPortBase from JSON; " "zero keeps the JSON value", e2LocalPortBaseOverride);
 
-    cmd.AddValue(
-        "e2Realtime",
-        "Override e2.realtime from JSON; true or false",
-        e2RealtimeOverride);
+    cmd.AddValue("e2Realtime", "Override e2.realtime from JSON; true or false", e2RealtimeOverride);
 
-    cmd.AddValue(
-        "rbgTraceFile",
-        "CSV output path for per-slice RBG allocation; "
-        "empty disables the trace",
-        rbgTraceFilePath);
+    cmd.AddValue("rbgTraceFile", "CSV output path for per-slice RBG allocation; " "empty disables the trace", rbgTraceFilePath);
 
-    cmd.AddValue(
-        "sliceMetricsFile",
-        "CSV output path for per-slice window metrics; "
-        "empty disables collection",
-        sliceMetricsFilePath);
+    cmd.AddValue("mobilityTraceFile", "CSV output path for periodic gNB and UE positions; empty disables the trace", mobilityTraceFilePath);
 
-    cmd.AddValue(
-        "sliceMetricsInterval",
-        "Duration of each slice metric observation window in seconds",
-        sliceMetricsInterval);
+    cmd.AddValue("mobilityTraceInterval", "Mobility trace sampling interval in seconds", mobilityTraceInterval);
 
-    cmd.AddValue(
-        "trafficStartTime",
-        "Time at which downlink traffic sources start, in seconds",
-        trafficStartTime);
+    cmd.AddValue("sliceMetricsFile", "CSV output path for per-slice window metrics; " "empty disables collection", sliceMetricsFilePath);
+
+    cmd.AddValue("sliceMetricsInterval", "Duration of each slice metric observation window in seconds", sliceMetricsInterval);
+
+    cmd.AddValue("trafficStartTime", "Time at which downlink traffic sources start, in seconds", trafficStartTime);
 
     cmd.Parse(argc, argv);
 
     // Load and validate all JSON-controlled network, radio, traffic and
     // slicing parameters after parsing the selected configuration path.
-    const NestScenarioConfig scenarioConfig =
-        LoadNestScenarioConfig(
-            configFilePath,
-            enableRanSlicing);
+    const NestScenarioConfig scenarioConfig = LoadNestScenarioConfig(configFilePath, enableRanSlicing);
 
-    NestE2Config e2Config =
-        scenarioConfig.e2;
+    RngSeedManager::SetSeed(scenarioConfig.rngSeed);
+    RngSeedManager::SetRun(scenarioConfig.rngRun);
+
+    std::cout << "RNG seed: " << RngSeedManager::GetSeed() << std::endl;
+    std::cout << "RNG run: " << RngSeedManager::GetRun() << std::endl;
+
+    NestE2Config e2Config = scenarioConfig.e2;
 
     // Apply only E2 options explicitly provided on the command line.
     if (!enableE2Override.empty())
     {
-        e2Config.enabled =
-            ParseBooleanCommandLineOverride(
-                enableE2Override,
-                "--enableE2");
+        e2Config.enabled = ParseBooleanCommandLineOverride(enableE2Override, "--enableE2");
     }
 
     if (!ipE2TermRic.empty())
     {
-        e2Config.termAddress =
-            ipE2TermRic;
+        e2Config.termAddress = ipE2TermRic;
     }
 
     if (e2TermPortOverride != 0)
     {
-        NS_ABORT_MSG_IF(
-            e2TermPortOverride >
-                std::numeric_limits<uint16_t>::max(),
-            "--e2TermPort must be in the range 1..65535");
+        NS_ABORT_MSG_IF(e2TermPortOverride > std::numeric_limits<uint16_t>::max(), "--e2TermPort must be in the range 1..65535");
 
-        e2Config.termPort =
-            static_cast<uint16_t>(e2TermPortOverride);
+        e2Config.termPort = static_cast<uint16_t>(e2TermPortOverride);
     }
 
     if (e2LocalPortBaseOverride != 0)
     {
-        NS_ABORT_MSG_IF(
-            e2LocalPortBaseOverride >
-                std::numeric_limits<uint16_t>::max(),
-            "--e2LocalPortBase must be in the range 1..65535");
+        NS_ABORT_MSG_IF(e2LocalPortBaseOverride > std::numeric_limits<uint16_t>::max(), "--e2LocalPortBase must be in the range 1..65535");
 
-        e2Config.localPortBase =
-            static_cast<uint16_t>(e2LocalPortBaseOverride);
+        e2Config.localPortBase = static_cast<uint16_t>(e2LocalPortBaseOverride);
     }
 
     if (!e2RealtimeOverride.empty())
     {
-        e2Config.realtime =
-            ParseBooleanCommandLineOverride(
-                e2RealtimeOverride,
-                "--e2Realtime");
+        e2Config.realtime = ParseBooleanCommandLineOverride(e2RealtimeOverride, "--e2Realtime");
     }
 
     ValidateNestE2Config(e2Config, scenarioConfig.gNbNum);
@@ -232,92 +192,59 @@ int main(int argc, char* argv[])
 
     // Create immutable local aliases for the validated scenario parameters.
     // Vector and map aliases use references to avoid unnecessary copies.
-    const uint16_t gNbNum =
-        scenarioConfig.gNbNum;
+    const uint16_t gNbNum = scenarioConfig.gNbNum;
 
-    const uint32_t ueNum =
-        scenarioConfig.ueNum;
+    const uint32_t ueNum = scenarioConfig.ueNum;
 
-    const double simTime =
-        scenarioConfig.simTime;
+    const double simTime = scenarioConfig.simTime;
 
-    const double interSiteDistance =
-        scenarioConfig.interSiteDistance;
+    const std::vector<NestPosition3d>& gNbPositions = scenarioConfig.gNbPositions;
+    const NestUePositionAreaConfig& uePositionArea = scenarioConfig.uePositionArea;
 
-    const double centralFrequency =
-        scenarioConfig.centralFrequency;
+    const double centralFrequency = scenarioConfig.centralFrequency;
 
-    const double bandwidth =
-        scenarioConfig.bandwidth;
+    const double bandwidth = scenarioConfig.bandwidth;
 
-    const uint16_t numerology =
-        scenarioConfig.numerology;
+    const uint16_t numerology = scenarioConfig.numerology;
 
-    const double txPower =
-        scenarioConfig.txPower;
+    const double txPower = scenarioConfig.txPower;
 
-    const double ueTxPower =
-        scenarioConfig.ueTxPower;
+    const double ueTxPower = scenarioConfig.ueTxPower;
 
-    const std::vector<int>& uesPerSlice =
-        scenarioConfig.uesPerSlice;
+    const std::vector<int>& uesPerSlice = scenarioConfig.uesPerSlice;
 
-    const std::vector<uint8_t>& sstPerSlice =
-        scenarioConfig.sstPerSlice;
+    const std::vector<uint8_t>& sstPerSlice = scenarioConfig.sstPerSlice;
 
-    const std::vector<std::string>& trafficTypes =
-        scenarioConfig.trafficTypes;
+    const std::vector<std::string>& trafficTypes = scenarioConfig.trafficTypes;
 
-    const std::map<std::string, NestTrafficProfile>&
-        trafficProfiles =
-            scenarioConfig.trafficProfiles;
+    const std::map<std::string, NestTrafficProfile>& trafficProfiles = scenarioConfig.trafficProfiles;
 
-    const std::vector<LocalPrbQuotaAction>&
-        localPrbQuotaActions =
-            scenarioConfig.localPrbQuotaActions;
+    const std::vector<LocalPrbQuotaAction>& localPrbQuotaActions = scenarioConfig.localPrbQuotaActions;
 
     // Validate event ordering and guarantee enough simulated time for metric
     // collection and, when enabled, at least one controller decision.
-    NS_ABORT_MSG_UNLESS(
-        trafficStartTime > 1.0 &&
-            trafficStartTime < simTime,
-        "trafficStartTime must be after slice mapping at 1.0 s "
-        "and before the end of the simulation");
+    NS_ABORT_MSG_UNLESS(trafficStartTime > 1.0 && trafficStartTime < simTime, "trafficStartTime must be after slice mapping at 1.0 s " "and before the end of the simulation");
 
-    NS_ABORT_MSG_UNLESS(
-        sliceMetricsInterval > 0.0,
-        "sliceMetricsInterval must be greater than zero");
+    NS_ABORT_MSG_UNLESS(sliceMetricsInterval > 0.0, "sliceMetricsInterval must be greater than zero");
 
-    const bool sliceMetricsRequired =
-        !sliceMetricsFilePath.empty() ||
-        scenarioConfig.localSliceController.has_value();
+    NS_ABORT_MSG_IF(!mobilityTraceFilePath.empty() && (!std::isfinite(mobilityTraceInterval) || mobilityTraceInterval <= 0.0), "mobilityTraceInterval must be finite and greater than zero");
+
+    const bool sliceMetricsRequired = !sliceMetricsFilePath.empty() || scenarioConfig.localSliceController.has_value();
 
     if (sliceMetricsRequired)
     {
-        NS_ABORT_MSG_UNLESS(
-            trafficStartTime + sliceMetricsInterval <= simTime,
-            "The simulation must contain at least one complete "
-            "slice metric observation window");
+        NS_ABORT_MSG_UNLESS(trafficStartTime + sliceMetricsInterval <= simTime, "The simulation must contain at least one complete " "slice metric observation window");
     }
 
     if (scenarioConfig.localSliceController.has_value())
     {
-        const LocalSliceControllerConfig& controllerConfig =
-            scenarioConfig.localSliceController.value();
+        const LocalSliceControllerConfig& controllerConfig = scenarioConfig.localSliceController.value();
 
-        NS_ABORT_MSG_UNLESS(
-            controllerConfig.initialApplyTime < trafficStartTime,
-            "Controller initial quotas must be applied before traffic starts");
+        NS_ABORT_MSG_UNLESS(controllerConfig.initialApplyTime < trafficStartTime, "Controller initial quotas must be applied before traffic starts");
 
-        NS_ABORT_MSG_UNLESS(
-            sliceMetricsInterval <= controllerConfig.decisionInterval,
-            "sliceMetricsInterval cannot exceed the controller "
-            "decisionInterval");
+        NS_ABORT_MSG_UNLESS(sliceMetricsInterval <= controllerConfig.decisionInterval, "sliceMetricsInterval cannot exceed the controller " "decisionInterval");
 
-        NS_ABORT_MSG_UNLESS(
-            trafficStartTime + controllerConfig.decisionInterval <= simTime,
-            "The simulation must contain at least one complete "
-            "controller decision period");
+        NS_ABORT_MSG_UNLESS(trafficStartTime + controllerConfig.decisionInterval <= simTime, "The simulation must contain at least one complete " "controller decision period");
     }
 
     // Map each UE to its slice and traffic type (for post-processing)
@@ -377,13 +304,14 @@ int main(int argc, char* argv[])
     // Mobility
     MobilityHelper gnbMobility;
     gnbMobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
-    Ptr<GridPositionAllocator> gnbPositionAlloc = CreateObject<GridPositionAllocator>();
-    gnbPositionAlloc->SetAttribute("MinX", DoubleValue(0.0));
-    gnbPositionAlloc->SetAttribute("MinY", DoubleValue(0.0));
-    gnbPositionAlloc->SetAttribute("DeltaX", DoubleValue(interSiteDistance));
-    gnbPositionAlloc->SetAttribute("DeltaY", DoubleValue(interSiteDistance));
-    gnbPositionAlloc->SetAttribute("GridWidth", UintegerValue(3));
-    gnbPositionAlloc->SetAttribute("LayoutType", StringValue("RowFirst"));
+
+    Ptr<ListPositionAllocator> gnbPositionAlloc = CreateObject<ListPositionAllocator>();
+
+    for (const NestPosition3d& position : gNbPositions)
+    {
+        gnbPositionAlloc->Add(Vector(position.x, position.y, position.z));
+    }
+
     gnbMobility.SetPositionAllocator(gnbPositionAlloc);
     gnbMobility.Install(gNbNodes);
 
@@ -400,10 +328,25 @@ int main(int argc, char* argv[])
     }
 
     MobilityHelper ueMobility;
-    Ptr<RandomRectanglePositionAllocator> positionAlloc = CreateObject<RandomRectanglePositionAllocator>();
-    positionAlloc->SetAttribute("X", StringValue("ns3::UniformRandomVariable[Min=-20|Max=20]"));
-    positionAlloc->SetAttribute("Y", StringValue("ns3::UniformRandomVariable[Min=-20|Max=20]"));
+
+    Ptr<UniformRandomVariable> xPosition = CreateObject<UniformRandomVariable>();
+    xPosition->SetAttribute("Min", DoubleValue(uePositionArea.xMin));
+    xPosition->SetAttribute("Max", DoubleValue(uePositionArea.xMax));
+
+    Ptr<UniformRandomVariable> yPosition = CreateObject<UniformRandomVariable>();
+    yPosition->SetAttribute("Min", DoubleValue(uePositionArea.yMin));
+    yPosition->SetAttribute("Max", DoubleValue(uePositionArea.yMax));
+
+    Ptr<ConstantRandomVariable> zPosition = CreateObject<ConstantRandomVariable>();
+    zPosition->SetAttribute("Constant", DoubleValue(uePositionArea.height));
+
+    Ptr<RandomBoxPositionAllocator> positionAlloc = CreateObject<RandomBoxPositionAllocator>();
+    positionAlloc->SetAttribute("X", PointerValue(xPosition));
+    positionAlloc->SetAttribute("Y", PointerValue(yPosition));
+    positionAlloc->SetAttribute("Z", PointerValue(zPosition));
+
     ueMobility.SetPositionAllocator(positionAlloc);
+
     ueMobility.SetMobilityModel("ns3::RandomWaypointMobilityModel",
                                 "Speed",
                                 StringValue("ns3::UniformRandomVariable[Min=5.0|Max=15.0]"),
@@ -837,9 +780,24 @@ int main(int argc, char* argv[])
             sliceMetricsCallback);
     }
 
+    if (!mobilityTraceFilePath.empty())
+    {
+        mobilityTraceStream.open(mobilityTraceFilePath, std::ios::out | std::ios::trunc);
+
+        NS_ABORT_MSG_UNLESS(mobilityTraceStream.is_open(), "Could not open mobility trace file: " << mobilityTraceFilePath);
+
+        mobilityTraceStream << "time_s,node_type,node_index,slice_index,sst,x,y,z\n";
+
+        Simulator::ScheduleNow(&SampleMobilityTrace, &gNbNodes, &ueNodes, &ueSliceId, &sstPerSlice, simTime, mobilityTraceInterval, &mobilityTraceStream);
+    }
+
     // Run
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
+    if (mobilityTraceStream.is_open())
+    {
+        mobilityTraceStream.close();
+    }
     if (rbgTraceStream.is_open())
     {
         rbgTraceStream.close();

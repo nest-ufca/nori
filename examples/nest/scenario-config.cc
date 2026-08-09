@@ -86,20 +86,98 @@ void ValidateNestControlMode(const NestScenarioConfig& config, bool enableRanSli
 }
 
 /**
+ * Parse and validate gNB positions and the UE position area.
+ */
+void ParseTopologyConfiguration(const nlohmann::json& topologyJson, NestScenarioConfig* config)
+{
+    NS_ABORT_MSG_IF(config == nullptr, "Scenario configuration pointer is null");
+
+    NS_ABORT_MSG_UNLESS(topologyJson.contains("numGNb") && topologyJson["numGNb"].is_number_integer(), "topology.numGNb must be an integer");
+
+    const int64_t gNbNum = topologyJson["numGNb"].get<int64_t>();
+
+    NS_ABORT_MSG_IF(gNbNum <= 0 || gNbNum > std::numeric_limits<uint16_t>::max(), "topology.numGNb must fit in a positive 16-bit value");
+
+    config->gNbNum = static_cast<uint16_t>(gNbNum);
+
+    NS_ABORT_MSG_UNLESS(topologyJson.contains("gnbPositions") && topologyJson["gnbPositions"].is_array(), "topology.gnbPositions must be a JSON array");
+
+    const nlohmann::json& gnbPositionsJson = topologyJson["gnbPositions"];
+
+    NS_ABORT_MSG_IF(gnbPositionsJson.size() != config->gNbNum, "topology.gnbPositions must contain exactly " "topology.numGNb entries");
+
+    config->gNbPositions.clear();
+    config->gNbPositions.reserve(config->gNbNum);
+
+    for (const nlohmann::json& positionJson : gnbPositionsJson)
+    {
+        NS_ABORT_MSG_UNLESS(
+            positionJson.is_object() &&
+                positionJson.contains("x") &&
+                positionJson["x"].is_number() &&
+                positionJson.contains("y") &&
+                positionJson["y"].is_number() &&
+                positionJson.contains("z") &&
+                positionJson["z"].is_number(),
+            "Each topology.gnbPositions entry must contain "
+            "numeric x, y and z fields");
+
+        NestPosition3d position{
+            positionJson["x"].get<double>(),
+            positionJson["y"].get<double>(),
+            positionJson["z"].get<double>()};
+
+        NS_ABORT_MSG_IF(!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z) || position.z < 0.0, "gNB coordinates must be finite and z must be non-negative");
+
+        config->gNbPositions.push_back(position);
+    }
+
+    NS_ABORT_MSG_UNLESS(topologyJson.contains("uePositionArea") && topologyJson["uePositionArea"].is_object(), "topology.uePositionArea must be a JSON object");
+
+    const nlohmann::json& uePositionAreaJson = topologyJson["uePositionArea"];
+
+    NS_ABORT_MSG_UNLESS(uePositionAreaJson.contains("mode") && uePositionAreaJson["mode"].is_string(), "topology.uePositionArea.mode must be a string");
+
+    const std::string mode = uePositionAreaJson["mode"].get<std::string>();
+
+    NS_ABORT_MSG_IF(mode != "uniform-rectangle", "topology.uePositionArea.mode must be uniform-rectangle");
+
+    for (const char* field : {"xMin", "xMax", "yMin", "yMax", "height"})
+    {
+        NS_ABORT_MSG_UNLESS(uePositionAreaJson.contains(field) && uePositionAreaJson[field].is_number(), "topology.uePositionArea bounds and height must be numeric");
+    }
+
+    config->uePositionArea.xMin = uePositionAreaJson["xMin"].get<double>();
+    config->uePositionArea.xMax = uePositionAreaJson["xMax"].get<double>();
+    config->uePositionArea.yMin = uePositionAreaJson["yMin"].get<double>();
+    config->uePositionArea.yMax = uePositionAreaJson["yMax"].get<double>();
+    config->uePositionArea.height = uePositionAreaJson["height"].get<double>();
+
+    NS_ABORT_MSG_IF(
+        !std::isfinite(config->uePositionArea.xMin) ||
+            !std::isfinite(config->uePositionArea.xMax) ||
+            !std::isfinite(config->uePositionArea.yMin) ||
+            !std::isfinite(config->uePositionArea.yMax) ||
+            !std::isfinite(config->uePositionArea.height),
+        "UE position-area bounds and height must be finite");
+
+    NS_ABORT_MSG_IF(
+        config->uePositionArea.xMin >= config->uePositionArea.xMax ||
+            config->uePositionArea.yMin >= config->uePositionArea.yMax,
+        "UE position-area minimum bounds must be smaller "
+        "than maximum bounds");
+
+    NS_ABORT_MSG_IF(config->uePositionArea.height < 0.0, "UE position-area height must be non-negative");
+}
+
+/**
  * Parse and validate all traffic profiles declared in the JSON document.
  */
-void
-ParseTrafficProfiles(
-    const nlohmann::json& configJson,
-    NestScenarioConfig* config)
+void ParseTrafficProfiles(const nlohmann::json& configJson, NestScenarioConfig* config)
 {
-    NS_ABORT_MSG_IF(config == nullptr,
-                    "Scenario configuration pointer is null");
+    NS_ABORT_MSG_IF(config == nullptr, "Scenario configuration pointer is null");
 
-    NS_ABORT_MSG_UNLESS(
-        configJson.contains("traffic") &&
-            configJson["traffic"].is_object(),
-        "The scenario must contain a traffic object");
+    NS_ABORT_MSG_UNLESS(configJson.contains("traffic") && configJson["traffic"].is_object(), "The scenario must contain a traffic object");
 
     for (const auto& item : configJson["traffic"].items())
     {
@@ -114,125 +192,68 @@ ParseTrafficProfiles(
 
         NestTrafficProfile profile;
 
-        profile.dataRateMbps =
-            trafficJson.value("bitrateMbps", -1.0);
+        profile.dataRateMbps = trafficJson.value("bitrateMbps", -1.0);
 
-        const int64_t packetSize =
-            trafficJson.value("packetSize", -1);
+        const int64_t packetSize = trafficJson.value("packetSize", -1);
 
-        profile.onTimeSeconds =
-            trafficJson.value("onTimeMean", 1.0);
+        profile.onTimeSeconds = trafficJson.value("onTimeMean", 1.0);
 
-        profile.offTimeSeconds =
-            trafficJson.value("offTimeMean", 0.01);
+        profile.offTimeSeconds = trafficJson.value("offTimeMean", 0.01);
 
-        NS_ABORT_MSG_IF(
-            !std::isfinite(profile.dataRateMbps) ||
-                profile.dataRateMbps <= 0.0,
-            "Traffic bitrateMbps must be finite and greater than zero");
+        NS_ABORT_MSG_IF(!std::isfinite(profile.dataRateMbps) || profile.dataRateMbps <= 0.0, "Traffic bitrateMbps must be finite and greater than zero");
 
-        NS_ABORT_MSG_IF(
-            packetSize <= 0 ||
-                packetSize >
-                    std::numeric_limits<uint16_t>::max(),
-            "Traffic packetSize must fit in an unsigned 16-bit value");
+        NS_ABORT_MSG_IF(packetSize <= 0 || packetSize > std::numeric_limits<uint16_t>::max(), "Traffic packetSize must fit in an unsigned 16-bit value");
 
-        NS_ABORT_MSG_IF(
-            !std::isfinite(profile.onTimeSeconds) ||
-                profile.onTimeSeconds <= 0.0,
-            "Traffic onTimeMean must be finite and greater than zero");
+        NS_ABORT_MSG_IF(!std::isfinite(profile.onTimeSeconds) || profile.onTimeSeconds <= 0.0, "Traffic onTimeMean must be finite and greater than zero");
 
-        NS_ABORT_MSG_IF(
-            !std::isfinite(profile.offTimeSeconds) ||
-                profile.offTimeSeconds < 0.0,
-            "Traffic offTimeMean must be finite and non-negative");
+        NS_ABORT_MSG_IF(!std::isfinite(profile.offTimeSeconds) || profile.offTimeSeconds < 0.0, "Traffic offTimeMean must be finite and non-negative");
 
-        profile.packetSize =
-            static_cast<uint16_t>(packetSize);
+        profile.packetSize = static_cast<uint16_t>(packetSize);
 
-        config->trafficProfiles.emplace(
-            trafficName,
-            profile);
+        config->trafficProfiles.emplace(trafficName, profile);
     }
 
-    NS_ABORT_MSG_IF(
-        config->trafficProfiles.empty(),
-        "At least one traffic profile must be configured");
+    NS_ABORT_MSG_IF(config->trafficProfiles.empty(), "At least one traffic profile must be configured");
 }
 
 /**
  * Parse and validate the UE, SST and traffic-profile mapping of each slice.
  */
-void
-ParseSliceConfiguration(
-    const nlohmann::json& configJson,
-    NestScenarioConfig* config)
+void ParseSliceConfiguration(const nlohmann::json& configJson, NestScenarioConfig* config)
 {
-    NS_ABORT_MSG_IF(config == nullptr,
-                    "Scenario configuration pointer is null");
+    NS_ABORT_MSG_IF(config == nullptr, "Scenario configuration pointer is null");
 
-    NS_ABORT_MSG_UNLESS(
-        configJson.contains("slices") &&
-            configJson["slices"].is_object(),
-        "The scenario must contain a slices object");
+    NS_ABORT_MSG_UNLESS(configJson.contains("slices") && configJson["slices"].is_object(), "The scenario must contain a slices object");
 
-    const nlohmann::json& slicesJson =
-        configJson["slices"];
+    const nlohmann::json& slicesJson = configJson["slices"];
 
-    NS_ABORT_MSG_UNLESS(
-        slicesJson.contains("UesPerSlice") &&
-            slicesJson["UesPerSlice"].is_array(),
-        "slices.UesPerSlice must be a JSON array");
+    NS_ABORT_MSG_UNLESS(slicesJson.contains("UesPerSlice") && slicesJson["UesPerSlice"].is_array(), "slices.UesPerSlice must be a JSON array");
 
-    NS_ABORT_MSG_UNLESS(
-        slicesJson.contains("trafficTypes") &&
-            slicesJson["trafficTypes"].is_array(),
-        "slices.trafficTypes must be a JSON array");
+    NS_ABORT_MSG_UNLESS(slicesJson.contains("trafficTypes") && slicesJson["trafficTypes"].is_array(), "slices.trafficTypes must be a JSON array");
 
-    NS_ABORT_MSG_UNLESS(
-        slicesJson.contains("SstPerSlice") &&
-            slicesJson["SstPerSlice"].is_array(),
-        "slices.SstPerSlice must be a JSON array");
+    NS_ABORT_MSG_UNLESS(slicesJson.contains("SstPerSlice") && slicesJson["SstPerSlice"].is_array(), "slices.SstPerSlice must be a JSON array");
 
     // Read the parallel per-slice arrays from the JSON document.
-    const std::vector<uint32_t> ueCounts =
-        slicesJson["UesPerSlice"]
-            .get<std::vector<uint32_t>>();
+    const std::vector<uint32_t> ueCounts = slicesJson["UesPerSlice"].get<std::vector<uint32_t>>();
 
-    config->trafficTypes =
-        slicesJson["trafficTypes"]
-            .get<std::vector<std::string>>();
+    config->trafficTypes = slicesJson["trafficTypes"].get<std::vector<std::string>>();
 
-    const std::vector<uint32_t> ssts =
-        slicesJson["SstPerSlice"]
-            .get<std::vector<uint32_t>>();
+    const std::vector<uint32_t> ssts = slicesJson["SstPerSlice"].get<std::vector<uint32_t>>();
 
-    NS_ABORT_MSG_IF(
-        ueCounts.empty(),
-        "At least one slice must be configured");
+    NS_ABORT_MSG_IF(ueCounts.empty(), "At least one slice must be configured");
 
     // Every array index must describe the same logical slice.
-    NS_ABORT_MSG_IF(
-        config->trafficTypes.size() != ueCounts.size() ||
-            ssts.size() != ueCounts.size(),
-        "UesPerSlice, trafficTypes and SstPerSlice sizes must match");
+    NS_ABORT_MSG_IF(config->trafficTypes.size() != ueCounts.size() || ssts.size() != ueCounts.size(), "UesPerSlice, trafficTypes and SstPerSlice sizes must match");
 
-    const uint32_t declaredSliceCount =
-        slicesJson.value(
-            "numSlices",
-            static_cast<uint32_t>(ueCounts.size()));
+    const uint32_t declaredSliceCount = slicesJson.value("numSlices", static_cast<uint32_t>(ueCounts.size()));
 
-    NS_ABORT_MSG_IF(
-        declaredSliceCount != ueCounts.size(),
-        "slices.numSlices does not match the slice arrays");
+    NS_ABORT_MSG_IF(declaredSliceCount != ueCounts.size(), "slices.numSlices does not match the slice arrays");
 
     std::set<uint8_t> configuredSsts;
     uint64_t totalUes = 0;
 
     // Validate each slice and build the internal slice vectors.
-    for (std::size_t sliceIndex = 0;
-         sliceIndex < ueCounts.size();
-         ++sliceIndex)
+    for (std::size_t sliceIndex = 0; sliceIndex < ueCounts.size(); ++sliceIndex)
     {
         NS_ABORT_MSG_IF(
             ueCounts[sliceIndex] == 0 ||
@@ -241,16 +262,11 @@ ParseSliceConfiguration(
                         std::numeric_limits<int>::max()),
             "Every slice must contain a valid positive UE count");
 
-        NS_ABORT_MSG_IF(
-            ssts[sliceIndex] > 255,
-            "Slice SST must be in the range 0..255");
+        NS_ABORT_MSG_IF(ssts[sliceIndex] > 255, "Slice SST must be in the range 0..255");
 
-        const uint8_t sst =
-            static_cast<uint8_t>(ssts[sliceIndex]);
+        const uint8_t sst = static_cast<uint8_t>(ssts[sliceIndex]);
 
-        NS_ABORT_MSG_IF(
-            !configuredSsts.insert(sst).second,
-            "Duplicate SST in slice configuration");
+        NS_ABORT_MSG_IF(!configuredSsts.insert(sst).second, "Duplicate SST in slice configuration");
 
         NS_ABORT_MSG_IF(
             config->trafficProfiles.find(
@@ -258,18 +274,14 @@ ParseSliceConfiguration(
                 config->trafficProfiles.end(),
             "Slice refers to an unknown traffic profile");
 
-        config->uesPerSlice.push_back(
-            static_cast<int>(ueCounts[sliceIndex]));
+        config->uesPerSlice.push_back(static_cast<int>(ueCounts[sliceIndex]));
 
         config->sstPerSlice.push_back(sst);
 
         totalUes += ueCounts[sliceIndex];
     }
 
-    NS_ABORT_MSG_IF(
-        totalUes >
-            std::numeric_limits<uint32_t>::max(),
-        "The total UE count exceeds the supported range");
+    NS_ABORT_MSG_IF(totalUes > std::numeric_limits<uint32_t>::max(), "The total UE count exceeds the supported range");
 
     // Derive the total number of UEs from all configured slices.
     config->ueNum =
@@ -280,20 +292,14 @@ ParseSliceConfiguration(
  * Parse and validate deterministic local PRB quota actions.
  */
 void
-ParseLocalPrbQuotaActions(
-    const nlohmann::json& configJson,
-    bool enableRanSlicing,
-    NestScenarioConfig* config)
+ParseLocalPrbQuotaActions(const nlohmann::json& configJson, bool enableRanSlicing, NestScenarioConfig* config)
 {
     NS_ABORT_MSG_IF(config == nullptr,
                     "Scenario configuration pointer is null");
 
     // Reject the obsolete quota format to keep the configuration schema
     // unambiguous.
-    NS_ABORT_MSG_IF(
-        configJson.contains("localPrbQuotas"),
-        "localPrbQuotas is no longer supported; "
-        "use localPrbQuotaActions instead");
+    NS_ABORT_MSG_IF(configJson.contains("localPrbQuotas"), "localPrbQuotas is no longer supported; " "use localPrbQuotaActions instead");
 
     // Deterministic local actions are optional.
     if (!configJson.contains("localPrbQuotaActions"))
@@ -684,88 +690,47 @@ LoadNestScenarioConfig(
         "The scenario must contain an NR object");
 
     // Parse scalar topology, simulation and NR parameters.
-    const uint32_t gNbNum =
-        configJson["topology"].value(
-            "numGNb",
-            static_cast<uint32_t>(config.gNbNum));
+    ParseTopologyConfiguration(configJson["topology"], &config);
 
-    NS_ABORT_MSG_IF(
-        gNbNum == 0 ||
-            gNbNum >
-                std::numeric_limits<uint16_t>::max(),
-        "topology.numGNb must fit in a positive 16-bit value");
+    const nlohmann::json& simulationJson = configJson["simulation"];
 
-    config.gNbNum =
-        static_cast<uint16_t>(gNbNum);
+    config.simTime = simulationJson.value("duration", config.simTime);
 
-    config.interSiteDistance =
-        configJson["topology"].value(
-            "distance",
-            config.interSiteDistance);
+    NS_ABORT_MSG_UNLESS(simulationJson.contains("rngSeed") && simulationJson["rngSeed"].is_number_unsigned(), "simulation.rngSeed must be an unsigned integer");
+    NS_ABORT_MSG_UNLESS(simulationJson.contains("rngRun") && simulationJson["rngRun"].is_number_unsigned(), "simulation.rngRun must be an unsigned integer");
 
-    config.simTime =
-        configJson["simulation"].value(
-            "duration",
-            config.simTime);
+    const uint64_t rngSeed = simulationJson["rngSeed"].get<uint64_t>();
+    const uint64_t rngRun = simulationJson["rngRun"].get<uint64_t>();
 
-    config.numerology =
-        configJson["NR"].value(
-            "numerology",
-            config.numerology);
+    NS_ABORT_MSG_IF(rngSeed == 0 || rngSeed > std::numeric_limits<uint32_t>::max(), "simulation.rngSeed must fit in a positive 32-bit value");
+    NS_ABORT_MSG_IF(rngRun == 0, "simulation.rngRun must be greater than zero");
 
-    const double bandwidthMHz =
-        configJson["NR"].value(
-            "bandwidthMHz",
-            config.bandwidth / 1e6);
+    config.rngSeed = static_cast<uint32_t>(rngSeed);
+    config.rngRun = rngRun;
+
+    config.numerology = configJson["NR"].value("numerology", config.numerology);
+
+    const double bandwidthMHz = configJson["NR"].value("bandwidthMHz", config.bandwidth / 1e6);
 
     // JSON exposes MHz for readability; ns-3 receives bandwidth in Hz.
-    config.bandwidth =
-        bandwidthMHz * 1e6;
+    config.bandwidth = bandwidthMHz * 1e6;
 
-    config.centralFrequency =
-        configJson["NR"].value(
-            "centralFrequency",
-            config.centralFrequency);
+    config.centralFrequency = configJson["NR"].value("centralFrequency", config.centralFrequency);
 
-    config.txPower =
-        configJson["NR"].value(
-            "txPower",
-            config.txPower);
+    config.txPower = configJson["NR"].value("txPower", config.txPower);
 
-    config.ueTxPower =
-        configJson["NR"].value(
-            "ueTxPower",
-            config.ueTxPower);
+    config.ueTxPower = configJson["NR"].value("ueTxPower", config.ueTxPower);
 
     // Validate scalar values before constructing the scenario.
-    NS_ABORT_MSG_IF(
-        !std::isfinite(config.interSiteDistance) ||
-            config.interSiteDistance <= 0.0,
-        "topology.distance must be finite and greater than zero");
+    NS_ABORT_MSG_IF(!std::isfinite(config.simTime) || config.simTime <= 1.0, "simulation.duration must be greater than one second");
 
-    NS_ABORT_MSG_IF(
-        !std::isfinite(config.simTime) ||
-            config.simTime <= 1.0,
-        "simulation.duration must be greater than one second");
+    NS_ABORT_MSG_IF(config.numerology > 4, "NR.numerology must be in the range 0..4");
 
-    NS_ABORT_MSG_IF(
-        config.numerology > 4,
-        "NR.numerology must be in the range 0..4");
+    NS_ABORT_MSG_IF(!std::isfinite(config.bandwidth) || config.bandwidth <= 0.0, "NR.bandwidthMHz must be finite and greater than zero");
 
-    NS_ABORT_MSG_IF(
-        !std::isfinite(config.bandwidth) ||
-            config.bandwidth <= 0.0,
-        "NR.bandwidthMHz must be finite and greater than zero");
+    NS_ABORT_MSG_IF(!std::isfinite(config.centralFrequency) || config.centralFrequency <= 0.0, "NR.centralFrequency must be finite and greater than zero");
 
-    NS_ABORT_MSG_IF(
-        !std::isfinite(config.centralFrequency) ||
-            config.centralFrequency <= 0.0,
-        "NR.centralFrequency must be finite and greater than zero");
-
-    NS_ABORT_MSG_IF(
-        !std::isfinite(config.txPower) ||
-            !std::isfinite(config.ueTxPower),
-        "NR transmit powers must be finite");
+    NS_ABORT_MSG_IF(!std::isfinite(config.txPower) || !std::isfinite(config.ueTxPower), "NR transmit powers must be finite");
 
     config.controlMode = ParseNestControlMode(configJson);
 
@@ -777,16 +742,9 @@ LoadNestScenarioConfig(
 
     ParseSliceConfiguration(configJson, &config);
 
-    ParseLocalPrbQuotaActions(
-        configJson,
-        enableRanSlicing,
-        &config);
+    ParseLocalPrbQuotaActions(configJson, enableRanSlicing, &config);
 
-    config.localSliceController =
-        ParseLocalSliceController(
-            configJson,
-            enableRanSlicing,
-            config);
+    config.localSliceController = ParseLocalSliceController(configJson, enableRanSlicing, config);
 
     // Validate the exclusive source allowed to change scheduler quotas.
     ValidateNestControlMode(config, enableRanSlicing);

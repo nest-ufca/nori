@@ -54,6 +54,28 @@ struct NestE2Config
 };
 
 /**
+ * One explicit three-dimensional position configured through JSON.
+ */
+struct NestPosition3d
+{
+    double x{0.0};
+    double y{0.0};
+    double z{0.0};
+};
+
+/**
+ * Uniform rectangular area used for UE placement and waypoint destinations.
+ */
+struct NestUePositionAreaConfig
+{
+    double xMin{0.0};
+    double xMax{0.0};
+    double yMin{0.0};
+    double yMax{0.0};
+    double height{0.0};
+};
+
+/**
  * Complete JSON configuration used by the NEST eMBB/URLLC scenario.
  *
  * Command-line output paths and collection intervals remain outside this
@@ -62,13 +84,16 @@ struct NestE2Config
  */
 struct NestScenarioConfig
 {
-    // Topology parameters.
-    uint16_t gNbNum{1};
+    // Topology and placement parameters.
+    uint16_t gNbNum{0};
     uint32_t ueNum{0};
+    std::vector<NestPosition3d> gNbPositions;
+    NestUePositionAreaConfig uePositionArea;
 
-    // Simulation timing and topology spacing.
+    // Simulation timing and reproducibility.
     double simTime{10.0};
-    double interSiteDistance{20.0};
+    uint32_t rngSeed{1};
+    uint64_t rngRun{1};
 
     // NR radio parameters. Frequency and bandwidth are stored in hertz.
     double centralFrequency{3.6e9};
