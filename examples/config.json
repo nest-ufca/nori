@@ -20,6 +20,15 @@
       "height": 0.0
     }
   },
+  "mobility": {
+    "_comment": "UE mobility model and model-specific parameters.",
+    "model": "random-waypoint",
+    "speed": {
+      "min": 5.0,
+      "max": 15.0
+    },
+    "pause": 0.0
+  },
   "simulation": {
     "_comment": "Global simulation parameters.",
     "duration": 5,

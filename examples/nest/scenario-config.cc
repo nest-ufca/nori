@@ -171,6 +171,48 @@ void ParseTopologyConfiguration(const nlohmann::json& topologyJson, NestScenario
 }
 
 /**
+ * Parse and validate the UE mobility model and its parameters.
+ */
+void ParseMobilityConfiguration(const nlohmann::json& mobilityJson, NestScenarioConfig* config)
+{
+    NS_ABORT_MSG_IF(config == nullptr, "Scenario configuration pointer is null");
+    NS_ABORT_MSG_UNLESS(mobilityJson.contains("model") && mobilityJson["model"].is_string(), "mobility.model must be a string");
+
+    const std::string model = mobilityJson["model"].get<std::string>();
+
+    if (model == "static")
+    {
+        NS_ABORT_MSG_IF(mobilityJson.contains("speed") || mobilityJson.contains("pause"), "mobility.model=static does not allow speed or pause parameters");
+
+        config->mobility = NestMobilityConfig{};
+        config->mobility.model = NestMobilityModel::STATIC;
+        return;
+    }
+
+    NS_ABORT_MSG_IF(model != "random-waypoint", "mobility.model must be one of: static, random-waypoint");
+    NS_ABORT_MSG_UNLESS(mobilityJson.contains("speed") && mobilityJson["speed"].is_object(), "mobility.speed must be a JSON object for random-waypoint");
+    NS_ABORT_MSG_UNLESS(mobilityJson.contains("pause") && mobilityJson["pause"].is_number(), "mobility.pause must be numeric for random-waypoint");
+
+    const nlohmann::json& speedJson = mobilityJson["speed"];
+
+    NS_ABORT_MSG_UNLESS(speedJson.contains("min") && speedJson["min"].is_number(), "mobility.speed.min must be numeric for random-waypoint");
+    NS_ABORT_MSG_UNLESS(speedJson.contains("max") && speedJson["max"].is_number(), "mobility.speed.max must be numeric for random-waypoint");
+
+    const double minSpeed = speedJson["min"].get<double>();
+    const double maxSpeed = speedJson["max"].get<double>();
+    const double pause = mobilityJson["pause"].get<double>();
+
+    NS_ABORT_MSG_IF(!std::isfinite(minSpeed) || minSpeed <= 0.0, "mobility.speed.min must be finite and greater than zero");
+    NS_ABORT_MSG_IF(!std::isfinite(maxSpeed) || maxSpeed < minSpeed, "mobility.speed.max must be finite and greater than or equal to mobility.speed.min");
+    NS_ABORT_MSG_IF(!std::isfinite(pause) || pause < 0.0, "mobility.pause must be finite and non-negative");
+
+    config->mobility.model = NestMobilityModel::RANDOM_WAYPOINT;
+    config->mobility.minSpeed = minSpeed;
+    config->mobility.maxSpeed = maxSpeed;
+    config->mobility.pause = pause;
+}
+
+/**
  * Parse and validate all traffic profiles declared in the JSON document.
  */
 void ParseTrafficProfiles(const nlohmann::json& configJson, NestScenarioConfig* config)
@@ -576,6 +618,22 @@ std::string NestControlModeToString(NestControlMode mode)
     }
 }
 
+std::string NestMobilityModelToString(NestMobilityModel model)
+{
+    switch (model)
+    {
+    case NestMobilityModel::STATIC:
+        return "static";
+
+    case NestMobilityModel::RANDOM_WAYPOINT:
+        return "random-waypoint";
+
+    default:
+        NS_ABORT_MSG("Unsupported mobility model");
+        return "unknown";
+    }
+}
+
 /**
  * Validate E2 endpoint values and the per-gNB local port range.
  */
@@ -680,6 +738,11 @@ LoadNestScenarioConfig(
         "The scenario must contain a topology object");
 
     NS_ABORT_MSG_UNLESS(
+        configJson.contains("mobility") &&
+            configJson["mobility"].is_object(),
+        "The scenario must contain a mobility object");
+
+    NS_ABORT_MSG_UNLESS(
         configJson.contains("simulation") &&
             configJson["simulation"].is_object(),
         "The scenario must contain a simulation object");
@@ -689,8 +752,9 @@ LoadNestScenarioConfig(
             configJson["NR"].is_object(),
         "The scenario must contain an NR object");
 
-    // Parse scalar topology, simulation and NR parameters.
+    // Parse topology, mobility, simulation and NR parameters.
     ParseTopologyConfiguration(configJson["topology"], &config);
+    ParseMobilityConfiguration(configJson["mobility"], &config);
 
     const nlohmann::json& simulationJson = configJson["simulation"];
 

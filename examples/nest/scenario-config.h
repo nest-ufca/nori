@@ -29,6 +29,31 @@ enum class NestControlMode
 std::string NestControlModeToString(NestControlMode mode);
 
 /**
+ * Selects the UE mobility model installed by the scenario.
+ */
+enum class NestMobilityModel
+{
+    STATIC,
+    RANDOM_WAYPOINT
+};
+
+/**
+ * Return the JSON and log name of a mobility model.
+ */
+std::string NestMobilityModelToString(NestMobilityModel model);
+
+/**
+ * UE mobility parameters configured through JSON.
+ */
+struct NestMobilityConfig
+{
+    NestMobilityModel model{NestMobilityModel::STATIC};
+    double minSpeed{0.0};
+    double maxSpeed{0.0};
+    double pause{0.0};
+};
+
+/**
  * Traffic generation parameters associated with one service profile.
  */
 struct NestTrafficProfile
@@ -89,6 +114,9 @@ struct NestScenarioConfig
     uint32_t ueNum{0};
     std::vector<NestPosition3d> gNbPositions;
     NestUePositionAreaConfig uePositionArea;
+
+    // UE mobility model and its model-specific parameters.
+    NestMobilityConfig mobility;
 
     // Simulation timing and reproducibility.
     double simTime{10.0};

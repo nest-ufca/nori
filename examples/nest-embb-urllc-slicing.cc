@@ -150,6 +150,14 @@ int main(int argc, char* argv[])
     std::cout << "RNG seed: " << RngSeedManager::GetSeed() << std::endl;
     std::cout << "RNG run: " << RngSeedManager::GetRun() << std::endl;
 
+    std::cout << "UE mobility model: " << NestMobilityModelToString(scenarioConfig.mobility.model) << std::endl;
+
+    if (scenarioConfig.mobility.model == NestMobilityModel::RANDOM_WAYPOINT)
+    {
+        std::cout << "UE mobility speed range: [" << scenarioConfig.mobility.minSpeed << ", " << scenarioConfig.mobility.maxSpeed << "] m/s" << std::endl;
+        std::cout << "UE mobility pause: " << scenarioConfig.mobility.pause << " s" << std::endl;
+    }
+
     NestE2Config e2Config = scenarioConfig.e2;
 
     // Apply only E2 options explicitly provided on the command line.
@@ -347,13 +355,25 @@ int main(int argc, char* argv[])
 
     ueMobility.SetPositionAllocator(positionAlloc);
 
-    ueMobility.SetMobilityModel("ns3::RandomWaypointMobilityModel",
-                                "Speed",
-                                StringValue("ns3::UniformRandomVariable[Min=5.0|Max=15.0]"),
-                                "Pause",
-                                StringValue("ns3::ConstantRandomVariable[Constant=0.0]"),
-                                "PositionAllocator",
-                                PointerValue(positionAlloc));
+    if (scenarioConfig.mobility.model == NestMobilityModel::STATIC)
+    {
+        ueMobility.SetMobilityModel("ns3::ConstantPositionMobilityModel");
+    }
+    else
+    {
+        Ptr<UniformRandomVariable> speed = CreateObject<UniformRandomVariable>();
+        speed->SetAttribute("Min", DoubleValue(scenarioConfig.mobility.minSpeed));
+        speed->SetAttribute("Max", DoubleValue(scenarioConfig.mobility.maxSpeed));
+
+        Ptr<ConstantRandomVariable> pause = CreateObject<ConstantRandomVariable>();
+        pause->SetAttribute("Constant", DoubleValue(scenarioConfig.mobility.pause));
+
+        ueMobility.SetMobilityModel("ns3::RandomWaypointMobilityModel",
+                                    "Speed", PointerValue(speed),
+                                    "Pause", PointerValue(pause),
+                                    "PositionAllocator", PointerValue(positionAlloc));
+    }
+
     ueMobility.Install(ueNodes);
 
     // Log initial UE positions
