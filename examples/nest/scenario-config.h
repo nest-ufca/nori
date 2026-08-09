@@ -54,6 +54,21 @@ struct NestMobilityConfig
 };
 
 /**
+ * 3GPP radio channel configuration.
+ *
+ * Update periods use seconds. A zero period disables periodic regeneration.
+ */
+struct NestChannelConfig
+{
+    std::string scenario{"UMa"};
+    std::string condition{"Default"};
+    std::string model{"ThreeGpp"};
+    bool shadowingEnabled{false};
+    double conditionUpdatePeriod{0.0};
+    double channelUpdatePeriod{0.0};
+};
+
+/**
  * Traffic generation parameters associated with one service profile.
  */
 struct NestTrafficProfile
@@ -117,6 +132,9 @@ struct NestScenarioConfig
 
     // UE mobility model and its model-specific parameters.
     NestMobilityConfig mobility;
+
+    // Radio propagation, channel condition and fast-fading configuration.
+    NestChannelConfig channel;
 
     // Simulation timing and reproducibility.
     double simTime{10.0};

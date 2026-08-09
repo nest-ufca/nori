@@ -104,7 +104,7 @@ void ParseTopologyConfiguration(const nlohmann::json& topologyJson, NestScenario
 
     const nlohmann::json& gnbPositionsJson = topologyJson["gnbPositions"];
 
-    NS_ABORT_MSG_IF(gnbPositionsJson.size() != config->gNbNum, "topology.gnbPositions must contain exactly " "topology.numGNb entries");
+    NS_ABORT_MSG_IF(gnbPositionsJson.size() != config->gNbNum, "topology.gnbPositions must contain exactly topology.numGNb entries");
 
     config->gNbPositions.clear();
     config->gNbPositions.reserve(config->gNbNum);
@@ -210,6 +210,51 @@ void ParseMobilityConfiguration(const nlohmann::json& mobilityJson, NestScenario
     config->mobility.minSpeed = minSpeed;
     config->mobility.maxSpeed = maxSpeed;
     config->mobility.pause = pause;
+}
+
+/**
+ * Parse and validate the 3GPP radio channel configuration.
+ */
+void ParseChannelConfiguration(const nlohmann::json& channelJson, NestScenarioConfig* config)
+{
+    NS_ABORT_MSG_IF(config == nullptr, "Scenario configuration pointer is null");
+    NS_ABORT_MSG_UNLESS(channelJson.contains("scenario") && channelJson["scenario"].is_string(), "channel.scenario must be a string");
+    NS_ABORT_MSG_UNLESS(channelJson.contains("condition") && channelJson["condition"].is_string(), "channel.condition must be a string");
+    NS_ABORT_MSG_UNLESS(channelJson.contains("model") && channelJson["model"].is_string(), "channel.model must be a string");
+    NS_ABORT_MSG_UNLESS(channelJson.contains("shadowingEnabled") && channelJson["shadowingEnabled"].is_boolean(), "channel.shadowingEnabled must be a boolean");
+    NS_ABORT_MSG_UNLESS(channelJson.contains("conditionUpdatePeriod") && channelJson["conditionUpdatePeriod"].is_number(), "channel.conditionUpdatePeriod must be numeric");
+    NS_ABORT_MSG_UNLESS(channelJson.contains("channelUpdatePeriod") && channelJson["channelUpdatePeriod"].is_number(), "channel.channelUpdatePeriod must be numeric");
+
+    const std::string scenario = channelJson["scenario"].get<std::string>();
+    const std::string condition = channelJson["condition"].get<std::string>();
+    const std::string model = channelJson["model"].get<std::string>();
+    const double conditionUpdatePeriod = channelJson["conditionUpdatePeriod"].get<double>();
+    const double channelUpdatePeriod = channelJson["channelUpdatePeriod"].get<double>();
+
+    const std::set<std::string> supportedScenarios{"RMa", "UMa", "UMi", "InH-OfficeOpen", "InH-OfficeMixed", "V2V-Highway"};
+
+    const std::set<std::string> supportedConditions{"Default", "LOS", "NLOS"};
+
+    NS_ABORT_MSG_IF(supportedScenarios.find(scenario) == supportedScenarios.end(), "channel.scenario must be one of: RMa, UMa, UMi, InH-OfficeOpen, InH-OfficeMixed, V2V-Highway");
+    NS_ABORT_MSG_IF(supportedConditions.find(condition) == supportedConditions.end(), "channel.condition must be one of: Default, LOS, NLOS");
+    NS_ABORT_MSG_IF(model != "ThreeGpp", "channel.model must be ThreeGpp");
+    if (scenario == "RMa")
+    {
+        const bool hasNonPositiveGnbHeight = std::any_of(config->gNbPositions.begin(), config->gNbPositions.end(), [](const NestPosition3d& position) { return position.z <= 0.0; });
+
+        NS_ABORT_MSG_IF(hasNonPositiveGnbHeight, "channel.scenario=RMa requires positive gNB z coordinates");
+        NS_ABORT_MSG_IF(config->uePositionArea.height <= 0.0, "channel.scenario=RMa requires a positive topology.uePositionArea.height");
+    }
+    NS_ABORT_MSG_IF(!std::isfinite(conditionUpdatePeriod) || conditionUpdatePeriod < 0.0, "channel.conditionUpdatePeriod must be finite and non-negative");
+    NS_ABORT_MSG_IF(!std::isfinite(channelUpdatePeriod) || channelUpdatePeriod < 0.0, "channel.channelUpdatePeriod must be finite and non-negative");
+    NS_ABORT_MSG_IF(condition != "Default" && conditionUpdatePeriod != 0.0, "channel.conditionUpdatePeriod must be zero for fixed LOS or NLOS conditions");
+
+    config->channel.scenario = scenario;
+    config->channel.condition = condition;
+    config->channel.model = model;
+    config->channel.shadowingEnabled = channelJson["shadowingEnabled"].get<bool>();
+    config->channel.conditionUpdatePeriod = conditionUpdatePeriod;
+    config->channel.channelUpdatePeriod = channelUpdatePeriod;
 }
 
 /**
@@ -341,7 +386,7 @@ ParseLocalPrbQuotaActions(const nlohmann::json& configJson, bool enableRanSlicin
 
     // Reject the obsolete quota format to keep the configuration schema
     // unambiguous.
-    NS_ABORT_MSG_IF(configJson.contains("localPrbQuotas"), "localPrbQuotas is no longer supported; " "use localPrbQuotaActions instead");
+    NS_ABORT_MSG_IF(configJson.contains("localPrbQuotas"), "localPrbQuotas is no longer supported; use localPrbQuotaActions instead");
 
     // Deterministic local actions are optional.
     if (!configJson.contains("localPrbQuotaActions"))
@@ -349,58 +394,34 @@ ParseLocalPrbQuotaActions(const nlohmann::json& configJson, bool enableRanSlicin
         return;
     }
 
-    const nlohmann::json& actionsJson =
-        configJson["localPrbQuotaActions"];
+    const nlohmann::json& actionsJson = configJson["localPrbQuotaActions"];
 
-    NS_ABORT_MSG_UNLESS(
-        actionsJson.is_array() &&
-            !actionsJson.empty(),
-        "localPrbQuotaActions must be a non-empty JSON array");
+    NS_ABORT_MSG_UNLESS(actionsJson.is_array() && !actionsJson.empty(), "localPrbQuotaActions must be a non-empty JSON array");
 
-    NS_ABORT_MSG_UNLESS(
-        enableRanSlicing,
-        "Local PRB quota actions require enableRanSlicing=true");
+    NS_ABORT_MSG_UNLESS(enableRanSlicing, "Local PRB quota actions require enableRanSlicing=true");
 
     // Actions must occur after slice mapping at 1.0 s and in strict
     // chronological order.
     double previousApplyTime = 1.0;
 
-    for (std::size_t actionIndex = 0;
-         actionIndex < actionsJson.size();
-         ++actionIndex)
+    for (std::size_t actionIndex = 0; actionIndex < actionsJson.size(); ++actionIndex)
     {
-        const std::string context =
-            "localPrbQuotaActions[" +
-            std::to_string(actionIndex) +
-            "]";
+        const std::string context = "localPrbQuotaActions[" + std::to_string(actionIndex) + "]";
 
-        LocalPrbQuotaAction action =
-            ParseLocalPrbQuotaAction(
-                actionsJson[actionIndex],
-                config->sstPerSlice,
-                config->simTime,
-                context);
+        LocalPrbQuotaAction action = ParseLocalPrbQuotaAction(actionsJson[actionIndex], config->sstPerSlice, config->simTime, context);
 
-        NS_ABORT_MSG_UNLESS(
-            action.applyTime > previousApplyTime,
-            "localPrbQuotaActions must be ordered by strictly "
-            "increasing applyTime values");
+        NS_ABORT_MSG_UNLESS(action.applyTime > previousApplyTime, "localPrbQuotaActions must be ordered by strictly increasing applyTime values");
 
         previousApplyTime = action.applyTime;
 
-        config->localPrbQuotaActions.push_back(
-            std::move(action));
+        config->localPrbQuotaActions.push_back(std::move(action));
     }
 }
 
 /**
  * Parse the optional closed-loop local slice controller configuration.
  */
-std::optional<LocalSliceControllerConfig>
-ParseLocalSliceController(
-    const nlohmann::json& configJson,
-    bool enableRanSlicing,
-    const NestScenarioConfig& scenarioConfig)
+std::optional<LocalSliceControllerConfig> ParseLocalSliceController(const nlohmann::json& configJson, bool enableRanSlicing, const NestScenarioConfig& scenarioConfig)
 {
     // The local controller is configured by the presence of this object.
     if (!configJson.contains("localSliceController"))
@@ -414,32 +435,22 @@ ParseLocalSliceController(
     NS_ABORT_MSG_IF(controllerJson.contains("enabled"), "localSliceController.enabled is no longer supported; use controlMode");
 
     // Quota control requires the slice-aware NORI scheduler.
-    NS_ABORT_MSG_UNLESS(
-        enableRanSlicing,
-        "The local slice controller requires enableRanSlicing=true");
+    NS_ABORT_MSG_UNLESS(enableRanSlicing, "The local slice controller requires enableRanSlicing=true");
 
     // Read policy parameters, using defaults for optional JSON fields.
     LocalSliceControllerConfig controllerConfig;
 
-    controllerConfig.initialApplyTime =
-        controllerJson.value("initialApplyTime", 1.1);
+    controllerConfig.initialApplyTime = controllerJson.value("initialApplyTime", 1.1);
 
-    controllerConfig.decisionInterval =
-        controllerJson.value("decisionInterval", 0.5);
+    controllerConfig.decisionInterval = controllerJson.value("decisionInterval", 0.5);
 
-    controllerConfig.quotaStep =
-        controllerJson.value("quotaStep", 10u);
+    controllerConfig.quotaStep = controllerJson.value("quotaStep", 10u);
 
-    controllerConfig.satisfactionHysteresis =
-        controllerJson.value(
-            "satisfactionHysteresis",
-            0.1);
+    controllerConfig.satisfactionHysteresis = controllerJson.value("satisfactionHysteresis", 0.1);
 
-    controllerConfig.minimumQuota =
-        controllerJson.value("minimumQuota", 10u);
+    controllerConfig.minimumQuota = controllerJson.value("minimumQuota", 10u);
 
-    controllerConfig.maximumQuota =
-        controllerJson.value("maximumQuota", 90u);
+    controllerConfig.maximumQuota = controllerJson.value("maximumQuota", 90u);
 
     // Initial quotas must be applied after slice mapping and before
     // simulation end.
@@ -451,72 +462,41 @@ ParseLocalSliceController(
         "localSliceController.initialApplyTime must be after "
         "slice mapping and before the end of the simulation");
 
-    NS_ABORT_MSG_UNLESS(
-        controllerJson.contains("slices") &&
-            controllerJson["slices"].is_array() &&
-            !controllerJson["slices"].empty(),
-        "localSliceController.slices must be a non-empty JSON array");
+    NS_ABORT_MSG_UNLESS(controllerJson.contains("slices") && controllerJson["slices"].is_array() && !controllerJson["slices"].empty(), "localSliceController.slices must be a non-empty JSON array");
 
     // Index controller entries by SST to detect duplicates and restore
     // scenario order.
-    std::map<uint8_t, LocalSliceControllerSliceConfig>
-        slicesBySst;
+    std::map<uint8_t, LocalSliceControllerSliceConfig> slicesBySst;
 
-    for (const nlohmann::json& sliceJson :
-         controllerJson["slices"])
+    for (const nlohmann::json& sliceJson : controllerJson["slices"])
     {
-        NS_ABORT_MSG_UNLESS(
-            sliceJson.is_object(),
-            "Each controller slice must be a JSON object");
+        NS_ABORT_MSG_UNLESS(sliceJson.is_object(), "Each controller slice must be a JSON object");
 
-        const uint32_t sliceId =
-            sliceJson.value("sliceId", 0u);
+        const uint32_t sliceId = sliceJson.value("sliceId", 0u);
 
-        NS_ABORT_MSG_IF(
-            sliceId == 0 || sliceId > 255,
-            "Controller sliceId must be in the range 1..255");
+        NS_ABORT_MSG_IF(sliceId == 0 || sliceId > 255, "Controller sliceId must be in the range 1..255");
 
-        const uint8_t sst =
-            static_cast<uint8_t>(sliceId);
+        const uint8_t sst = static_cast<uint8_t>(sliceId);
 
-        NS_ABORT_MSG_IF(
-            std::find(
-                scenarioConfig.sstPerSlice.begin(),
-                scenarioConfig.sstPerSlice.end(),
-                sst) ==
-                scenarioConfig.sstPerSlice.end(),
-            "Controller refers to an SST not configured by the scenario");
+        NS_ABORT_MSG_IF(std::find(scenarioConfig.sstPerSlice.begin(), scenarioConfig.sstPerSlice.end(), sst) == scenarioConfig.sstPerSlice.end(), "Controller refers to an SST not configured by the scenario");
 
         LocalSliceControllerSliceConfig sliceConfig;
 
         sliceConfig.sst = sst;
 
-        sliceConfig.initialQuota =
-            sliceJson.value("initialQuota", 101u);
+        sliceConfig.initialQuota = sliceJson.value("initialQuota", 101u);
 
-        sliceConfig.throughputTargetMbps =
-            sliceJson.value(
-                "throughputTargetMbps",
-                -1.0);
+        sliceConfig.throughputTargetMbps = sliceJson.value("throughputTargetMbps", -1.0);
 
-        NS_ABORT_MSG_IF(
-            !slicesBySst.emplace(
-                sst,
-                sliceConfig).second,
-            "Controller contains a duplicate SST");
+        NS_ABORT_MSG_IF(!slicesBySst.emplace(sst, sliceConfig).second, "Controller contains a duplicate SST");
     }
 
-    NS_ABORT_MSG_IF(
-        slicesBySst.size() !=
-            scenarioConfig.sstPerSlice.size(),
-        "The controller must configure every scenario SST");
+    NS_ABORT_MSG_IF(slicesBySst.size() != scenarioConfig.sstPerSlice.size(), "The controller must configure every scenario SST");
 
     // Store controller slices in the scenario's internal slice order.
-    for (uint8_t configuredSst :
-         scenarioConfig.sstPerSlice)
+    for (uint8_t configuredSst : scenarioConfig.sstPerSlice)
     {
-        controllerConfig.slices.push_back(
-            slicesBySst.at(configuredSst));
+        controllerConfig.slices.push_back(slicesBySst.at(configuredSst));
     }
 
     return controllerConfig;
@@ -525,10 +505,7 @@ ParseLocalSliceController(
 /**
  * Parse the optional E2 connection section.
  */
-NestE2Config
-ParseE2Configuration(
-    const nlohmann::json& configJson,
-    uint16_t gNbNum)
+NestE2Config ParseE2Configuration(const nlohmann::json& configJson, uint16_t gNbNum)
 {
     NestE2Config e2Config;
 
@@ -538,57 +515,31 @@ ParseE2Configuration(
         return e2Config;
     }
 
-    const nlohmann::json& e2Json =
-        configJson["e2"];
+    const nlohmann::json& e2Json = configJson["e2"];
 
-    NS_ABORT_MSG_UNLESS(
-        e2Json.is_object(),
-        "e2 must be a JSON object");
+    NS_ABORT_MSG_UNLESS(e2Json.is_object(), "e2 must be a JSON object");
 
-    e2Config.enabled =
-        e2Json.value("enabled", e2Config.enabled);
+    e2Config.enabled = e2Json.value("enabled", e2Config.enabled);
 
-    e2Config.mcc =
-        e2Json.value("mcc", e2Config.mcc);
+    e2Config.mcc = e2Json.value("mcc", e2Config.mcc);
 
-    e2Config.mnc =
-        e2Json.value("mnc", e2Config.mnc);
+    e2Config.mnc = e2Json.value("mnc", e2Config.mnc);
 
-    e2Config.termAddress =
-        e2Json.value(
-            "termAddress",
-            e2Config.termAddress);
+    e2Config.termAddress = e2Json.value("termAddress", e2Config.termAddress);
 
-    e2Config.realtime =
-        e2Json.value("realtime", e2Config.realtime);
+    e2Config.realtime = e2Json.value("realtime", e2Config.realtime);
 
-    const int64_t termPort =
-        e2Json.value(
-            "termPort",
-            static_cast<int64_t>(e2Config.termPort));
+    const int64_t termPort = e2Json.value("termPort", static_cast<int64_t>(e2Config.termPort));
 
-    const int64_t localPortBase =
-        e2Json.value(
-            "localPortBase",
-            static_cast<int64_t>(e2Config.localPortBase));
+    const int64_t localPortBase = e2Json.value("localPortBase", static_cast<int64_t>(e2Config.localPortBase));
 
-    NS_ABORT_MSG_IF(
-        termPort <= 0 ||
-            termPort >
-                std::numeric_limits<uint16_t>::max(),
-        "e2.termPort must be in the range 1..65535");
+    NS_ABORT_MSG_IF(termPort <= 0 || termPort > std::numeric_limits<uint16_t>::max(), "e2.termPort must be in the range 1..65535");
 
-    NS_ABORT_MSG_IF(
-        localPortBase <= 0 ||
-            localPortBase >
-                std::numeric_limits<uint16_t>::max(),
-        "e2.localPortBase must be in the range 1..65535");
+    NS_ABORT_MSG_IF(localPortBase <= 0 || localPortBase > std::numeric_limits<uint16_t>::max(), "e2.localPortBase must be in the range 1..65535");
 
-    e2Config.termPort =
-        static_cast<uint16_t>(termPort);
+    e2Config.termPort = static_cast<uint16_t>(termPort);
 
-    e2Config.localPortBase =
-        static_cast<uint16_t>(localPortBase);
+    e2Config.localPortBase = static_cast<uint16_t>(localPortBase);
 
     ValidateNestE2Config(e2Config, gNbNum);
     return e2Config;
@@ -637,13 +588,9 @@ std::string NestMobilityModelToString(NestMobilityModel model)
 /**
  * Validate E2 endpoint values and the per-gNB local port range.
  */
-void
-ValidateNestE2Config(
-    const NestE2Config& config,
-    uint16_t gNbNum)
+void ValidateNestE2Config(const NestE2Config& config, uint16_t gNbNum)
 {
-    const Ipv4Address termAddress(
-        config.termAddress.c_str());
+    const Ipv4Address termAddress(config.termAddress.c_str());
 
     const auto containsOnlyDigits =
         [](const std::string& value) {
@@ -656,58 +603,30 @@ ValidateNestE2Config(
                 });
         };
 
-    NS_ABORT_MSG_UNLESS(
-        config.mcc.size() == 3 &&
-            containsOnlyDigits(config.mcc),
-        "e2.mcc must contain exactly three decimal digits");
+    NS_ABORT_MSG_UNLESS(config.mcc.size() == 3 && containsOnlyDigits(config.mcc), "e2.mcc must contain exactly three decimal digits");
 
-    NS_ABORT_MSG_UNLESS(
-        (config.mnc.size() == 2 ||
-         config.mnc.size() == 3) &&
-            containsOnlyDigits(config.mnc),
-        "e2.mnc must contain two or three decimal digits");
+    NS_ABORT_MSG_UNLESS((config.mnc.size() == 2 || config.mnc.size() == 3) && containsOnlyDigits(config.mnc), "e2.mnc must contain two or three decimal digits");
 
-    NS_ABORT_MSG_UNLESS(
-        termAddress.IsInitialized() &&
-            !termAddress.IsAny() &&
-            !termAddress.IsBroadcast() &&
-            !termAddress.IsMulticast(),
-        "e2.termAddress must be a valid unicast IPv4 address");
+    NS_ABORT_MSG_UNLESS(termAddress.IsInitialized() && !termAddress.IsAny() && !termAddress.IsBroadcast() && !termAddress.IsMulticast(), "e2.termAddress must be a valid unicast IPv4 address");
 
-    NS_ABORT_MSG_IF(
-        config.termPort == 0,
-        "e2.termPort must be in the range 1..65535");
+    NS_ABORT_MSG_IF(config.termPort == 0, "e2.termPort must be in the range 1..65535");
 
-    NS_ABORT_MSG_IF(
-        config.localPortBase == 0,
-        "e2.localPortBase must be in the range 1..65535");
+    NS_ABORT_MSG_IF(config.localPortBase == 0, "e2.localPortBase must be in the range 1..65535");
 
-    const uint32_t highestLocalPort =
-        static_cast<uint32_t>(config.localPortBase) +
-        gNbNum;
+    const uint32_t highestLocalPort = static_cast<uint32_t>(config.localPortBase) + gNbNum;
 
-    NS_ABORT_MSG_IF(
-        highestLocalPort >
-            std::numeric_limits<uint16_t>::max(),
-        "e2.localPortBase does not leave enough ports "
-        "for all configured gNBs");
+    NS_ABORT_MSG_IF(highestLocalPort > std::numeric_limits<uint16_t>::max(), "e2.localPortBase does not leave enough ports for all configured gNBs");
 }
 
 /**
  * Load and validate the complete JSON configuration for the NEST scenario.
  */
-NestScenarioConfig
-LoadNestScenarioConfig(
-    const std::string& configFilePath,
-    bool enableRanSlicing)
+NestScenarioConfig LoadNestScenarioConfig(const std::string& configFilePath, bool enableRanSlicing)
 {
     // Open the scenario configuration file.
     std::ifstream configFile(configFilePath);
 
-    NS_ABORT_MSG_UNLESS(
-        configFile.is_open(),
-        "Could not open configuration file: " +
-            configFilePath);
+    NS_ABORT_MSG_UNLESS(configFile.is_open(), "Could not open configuration file: " + configFilePath);
 
     // Parse the JSON document and report syntax errors with file context.
     nlohmann::json configJson;
@@ -718,43 +637,28 @@ LoadNestScenarioConfig(
     }
     catch (const std::exception& error)
     {
-        NS_FATAL_ERROR(
-            "Could not parse configuration file "
-            << configFilePath
-            << ": "
-            << error.what());
+        NS_FATAL_ERROR("Could not parse configuration file " << configFilePath << ": " << error.what());
     }
 
-    NS_ABORT_MSG_UNLESS(
-        configJson.is_object(),
-        "The scenario configuration root must be a JSON object");
+    NS_ABORT_MSG_UNLESS(configJson.is_object(), "The scenario configuration root must be a JSON object");
 
     NestScenarioConfig config;
 
     // Validate the required top-level JSON sections.
-    NS_ABORT_MSG_UNLESS(
-        configJson.contains("topology") &&
-            configJson["topology"].is_object(),
-        "The scenario must contain a topology object");
+    NS_ABORT_MSG_UNLESS(configJson.contains("topology") && configJson["topology"].is_object(), "The scenario must contain a topology object");
 
-    NS_ABORT_MSG_UNLESS(
-        configJson.contains("mobility") &&
-            configJson["mobility"].is_object(),
-        "The scenario must contain a mobility object");
+    NS_ABORT_MSG_UNLESS(configJson.contains("mobility") && configJson["mobility"].is_object(), "The scenario must contain a mobility object");
 
-    NS_ABORT_MSG_UNLESS(
-        configJson.contains("simulation") &&
-            configJson["simulation"].is_object(),
-        "The scenario must contain a simulation object");
+    NS_ABORT_MSG_UNLESS(configJson.contains("channel") && configJson["channel"].is_object(), "The scenario must contain a channel object");
 
-    NS_ABORT_MSG_UNLESS(
-        configJson.contains("NR") &&
-            configJson["NR"].is_object(),
-        "The scenario must contain an NR object");
+    NS_ABORT_MSG_UNLESS(configJson.contains("simulation") && configJson["simulation"].is_object(), "The scenario must contain a simulation object");
 
-    // Parse topology, mobility, simulation and NR parameters.
+    NS_ABORT_MSG_UNLESS(configJson.contains("NR") && configJson["NR"].is_object(), "The scenario must contain an NR object");
+
+    // Parse topology, mobility, channel, simulation and NR parameters.
     ParseTopologyConfiguration(configJson["topology"], &config);
     ParseMobilityConfiguration(configJson["mobility"], &config);
+    ParseChannelConfiguration(configJson["channel"], &config);
 
     const nlohmann::json& simulationJson = configJson["simulation"];
 

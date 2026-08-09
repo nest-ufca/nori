@@ -3,6 +3,7 @@
 #include "nest/slice-metrics-collector.h"
 #include "nest/slice-controller.h"
 #include "nest/mobility-trace.h"
+#include "ns3/three-gpp-channel-model.h"
 #include "ns3/E2-term-helper.h"
 #include "ns3/E2-interface.h"
 #include "ns3/nr-ue-net-device.h"
@@ -43,10 +44,7 @@ namespace
 /**
  * Parse an explicitly provided boolean command-line override.
  */
-bool
-ParseBooleanCommandLineOverride(
-    const std::string& value,
-    const std::string& optionName)
+bool ParseBooleanCommandLineOverride(const std::string& value, const std::string& optionName)
 {
     if (value == "true" || value == "1")
     {
@@ -58,9 +56,7 @@ ParseBooleanCommandLineOverride(
         return false;
     }
 
-    NS_FATAL_ERROR(
-        optionName
-        << " must be true, false, 1 or 0");
+    NS_FATAL_ERROR(optionName << " must be true, false, 1 or 0");
 
     return false;
 }
@@ -85,8 +81,7 @@ int main(int argc, char* argv[])
     // Execution-level options controlled from the command line.
     // Network topology, radio parameters, slices and traffic profiles are
     // loaded from the JSON configuration file.
-    std::string configFilePath =
-        "contrib/nori/examples/config.json";
+    std::string configFilePath = "contrib/nori/examples/config.json";
 
     bool enableRanSlicing = true;
 
@@ -122,17 +117,17 @@ int main(int argc, char* argv[])
 
     cmd.AddValue("e2TermPort", "Override e2.termPort from JSON; zero keeps the JSON value", e2TermPortOverride);
 
-    cmd.AddValue("e2LocalPortBase", "Override e2.localPortBase from JSON; " "zero keeps the JSON value", e2LocalPortBaseOverride);
+    cmd.AddValue("e2LocalPortBase", "Override e2.localPortBase from JSON; zero keeps the JSON value", e2LocalPortBaseOverride);
 
     cmd.AddValue("e2Realtime", "Override e2.realtime from JSON; true or false", e2RealtimeOverride);
 
-    cmd.AddValue("rbgTraceFile", "CSV output path for per-slice RBG allocation; " "empty disables the trace", rbgTraceFilePath);
+    cmd.AddValue("rbgTraceFile", "CSV output path for per-slice RBG allocation; empty disables the trace", rbgTraceFilePath);
 
     cmd.AddValue("mobilityTraceFile", "CSV output path for periodic gNB and UE positions; empty disables the trace", mobilityTraceFilePath);
 
     cmd.AddValue("mobilityTraceInterval", "Mobility trace sampling interval in seconds", mobilityTraceInterval);
 
-    cmd.AddValue("sliceMetricsFile", "CSV output path for per-slice window metrics; " "empty disables collection", sliceMetricsFilePath);
+    cmd.AddValue("sliceMetricsFile", "CSV output path for per-slice window metrics; empty disables collection", sliceMetricsFilePath);
 
     cmd.AddValue("sliceMetricsInterval", "Duration of each slice metric observation window in seconds", sliceMetricsInterval);
 
@@ -157,6 +152,13 @@ int main(int argc, char* argv[])
         std::cout << "UE mobility speed range: [" << scenarioConfig.mobility.minSpeed << ", " << scenarioConfig.mobility.maxSpeed << "] m/s" << std::endl;
         std::cout << "UE mobility pause: " << scenarioConfig.mobility.pause << " s" << std::endl;
     }
+
+    std::cout << "Channel model: " << scenarioConfig.channel.model << std::endl;
+    std::cout << "Channel scenario: " << scenarioConfig.channel.scenario << std::endl;
+    std::cout << "Channel condition: " << scenarioConfig.channel.condition << std::endl;
+    std::cout << "Channel shadowing: " << (scenarioConfig.channel.shadowingEnabled ? "enabled" : "disabled") << std::endl;
+    std::cout << "Channel condition update period: " << scenarioConfig.channel.conditionUpdatePeriod << " s" << std::endl;
+    std::cout << "Channel realization update period: " << scenarioConfig.channel.channelUpdatePeriod << " s" << std::endl;
 
     NestE2Config e2Config = scenarioConfig.e2;
 
@@ -231,7 +233,7 @@ int main(int argc, char* argv[])
 
     // Validate event ordering and guarantee enough simulated time for metric
     // collection and, when enabled, at least one controller decision.
-    NS_ABORT_MSG_UNLESS(trafficStartTime > 1.0 && trafficStartTime < simTime, "trafficStartTime must be after slice mapping at 1.0 s " "and before the end of the simulation");
+    NS_ABORT_MSG_UNLESS(trafficStartTime > 1.0 && trafficStartTime < simTime, "trafficStartTime must be after slice mapping at 1.0 s and before the end of the simulation");
 
     NS_ABORT_MSG_UNLESS(sliceMetricsInterval > 0.0, "sliceMetricsInterval must be greater than zero");
 
@@ -241,7 +243,7 @@ int main(int argc, char* argv[])
 
     if (sliceMetricsRequired)
     {
-        NS_ABORT_MSG_UNLESS(trafficStartTime + sliceMetricsInterval <= simTime, "The simulation must contain at least one complete " "slice metric observation window");
+        NS_ABORT_MSG_UNLESS(trafficStartTime + sliceMetricsInterval <= simTime, "The simulation must contain at least one complete slice metric observation window");
     }
 
     if (scenarioConfig.localSliceController.has_value())
@@ -250,9 +252,9 @@ int main(int argc, char* argv[])
 
         NS_ABORT_MSG_UNLESS(controllerConfig.initialApplyTime < trafficStartTime, "Controller initial quotas must be applied before traffic starts");
 
-        NS_ABORT_MSG_UNLESS(sliceMetricsInterval <= controllerConfig.decisionInterval, "sliceMetricsInterval cannot exceed the controller " "decisionInterval");
+        NS_ABORT_MSG_UNLESS(sliceMetricsInterval <= controllerConfig.decisionInterval, "sliceMetricsInterval cannot exceed the controller decisionInterval");
 
-        NS_ABORT_MSG_UNLESS(trafficStartTime + controllerConfig.decisionInterval <= simTime, "The simulation must contain at least one complete " "controller decision period");
+        NS_ABORT_MSG_UNLESS(trafficStartTime + controllerConfig.decisionInterval <= simTime, "The simulation must contain at least one complete controller decision period");
     }
 
     // Map each UE to its slice and traffic type (for post-processing)
@@ -267,12 +269,9 @@ int main(int argc, char* argv[])
 
     if (e2Config.enabled && e2Config.realtime)
     {
-        GlobalValue::Bind(
-            "SimulatorImplementationType",
-            StringValue("ns3::RealtimeSimulatorImpl"));
+        GlobalValue::Bind("SimulatorImplementationType", StringValue("ns3::RealtimeSimulatorImpl"));
 
-        NS_LOG_INFO(
-            "Realtime simulator enabled for E2 communication");
+        NS_LOG_INFO("Realtime simulator enabled for E2 communication");
     }
     else
     {
@@ -368,10 +367,7 @@ int main(int argc, char* argv[])
         Ptr<ConstantRandomVariable> pause = CreateObject<ConstantRandomVariable>();
         pause->SetAttribute("Constant", DoubleValue(scenarioConfig.mobility.pause));
 
-        ueMobility.SetMobilityModel("ns3::RandomWaypointMobilityModel",
-                                    "Speed", PointerValue(speed),
-                                    "Pause", PointerValue(pause),
-                                    "PositionAllocator", PointerValue(positionAlloc));
+        ueMobility.SetMobilityModel("ns3::RandomWaypointMobilityModel", "Speed", PointerValue(speed), "Pause", PointerValue(pause), "PositionAllocator", PointerValue(positionAlloc));
     }
 
     ueMobility.Install(ueNodes);
@@ -405,9 +401,19 @@ int main(int argc, char* argv[])
     bandConf.m_numBwp = 1;
     band = ccBwpCreator.CreateOperationBandContiguousCc(bandConf);
     Ptr<NrChannelHelper> channelHelper = CreateObject<NrChannelHelper>();
-    channelHelper->ConfigureFactories("UMa", "Default", "ThreeGpp");
-    channelHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(false));
-    channelHelper->SetChannelConditionModelAttribute("UpdatePeriod", TimeValue(MilliSeconds(0)));
+    channelHelper->ConfigureFactories(scenarioConfig.channel.scenario, scenarioConfig.channel.condition, scenarioConfig.channel.model);
+
+    Ptr<ThreeGppChannelModel> channelModel = CreateObject<ThreeGppChannelModel>();
+    channelModel->SetAttribute("UpdatePeriod", TimeValue(Seconds(scenarioConfig.channel.channelUpdatePeriod)));
+
+    channelHelper->SetPhasedArraySpectrumPropagationLossModelAttribute("ChannelModel", PointerValue(channelModel));
+    channelHelper->SetPathlossAttribute("ShadowingEnabled", BooleanValue(scenarioConfig.channel.shadowingEnabled));
+
+    if (scenarioConfig.channel.condition == "Default")
+    {
+        channelHelper->SetChannelConditionModelAttribute("UpdatePeriod", TimeValue(Seconds(scenarioConfig.channel.conditionUpdatePeriod)));
+    }
+
     channelHelper->AssignChannelsToBands({band});
     allBwps = CcBwpCreator::GetAllBwps({band});
 
@@ -421,49 +427,30 @@ int main(int argc, char* argv[])
 
     if (!rbgTraceFilePath.empty())
     {
-        NS_ABORT_MSG_UNLESS(
-            enableRanSlicing,
-            "RBG trace requires enableRanSlicing=true");
+        NS_ABORT_MSG_UNLESS(enableRanSlicing, "RBG trace requires enableRanSlicing=true");
 
-        rbgTraceStream.open(rbgTraceFilePath,
-                            std::ios::out | std::ios::trunc);
+        rbgTraceStream.open(rbgTraceFilePath, std::ios::out | std::ios::trunc);
 
-        NS_ABORT_MSG_UNLESS(
-            rbgTraceStream.is_open(),
-            "Could not open RBG trace file: " << rbgTraceFilePath);
+        NS_ABORT_MSG_UNLESS(rbgTraceStream.is_open(), "Could not open RBG trace file: " << rbgTraceFilePath);
 
-        rbgTraceStream
-            << "time_ns,gnb_index,bwp_id,slice_index,sst,"
-            "allocated_rbg,available_rbg\n";
+        rbgTraceStream << "time_ns,gnb_index,bwp_id,slice_index,sst,allocated_rbg,available_rbg\n";
 
         for (uint32_t gNbIdx = 0; gNbIdx < gNbDevs.GetN(); ++gNbIdx)
         {
-            auto gNbDevice =
-                DynamicCast<NrGnbNetDevice>(gNbDevs.Get(gNbIdx));
+            auto gNbDevice = DynamicCast<NrGnbNetDevice>(gNbDevs.Get(gNbIdx));
 
             NS_ABORT_MSG_UNLESS(gNbDevice,
                                 "Could not cast device to NrGnbNetDevice");
 
             constexpr uint8_t bwpId = 0;
 
-            auto scheduler =
-                DynamicCast<NrRLMacSchedulerOfdma>(
-                    gNbDevice->GetScheduler(bwpId));
+            auto scheduler = DynamicCast<NrRLMacSchedulerOfdma>(gNbDevice->GetScheduler(bwpId));
 
-            NS_ABORT_MSG_UNLESS(
-                scheduler,
-                "RBG trace requires NrRLMacSchedulerOfdma");
+            NS_ABORT_MSG_UNLESS(scheduler, "RBG trace requires NrRLMacSchedulerOfdma");
 
-            bool connected = scheduler->TraceConnectWithoutContext(
-                "SliceRbgAllocation",
-                MakeBoundCallback(&WriteSliceRbgAllocation,
-                                &rbgTraceStream,
-                                gNbIdx,
-                                bwpId));
+            bool connected = scheduler->TraceConnectWithoutContext("SliceRbgAllocation", MakeBoundCallback(&WriteSliceRbgAllocation, &rbgTraceStream, gNbIdx, bwpId));
 
-            NS_ABORT_MSG_UNLESS(
-                connected,
-                "Could not connect SliceRbgAllocation trace");
+            NS_ABORT_MSG_UNLESS(connected, "Could not connect SliceRbgAllocation trace");
         }
     }
 
@@ -495,12 +482,7 @@ int main(int argc, char* argv[])
     nrHelper->AttachToClosestGnb(ueDevs, gNbDevs);
 
     // Schedule slice mapping after RRC connection has been established
-    NoriSlicingHelper::ScheduleSliceMapping(Seconds(1.0),
-                                            enableRanSlicing,
-                                            uesPerSlice,
-                                            sstPerSlice,
-                                            gNbDevs,
-                                            ueDevs);
+    NoriSlicingHelper::ScheduleSliceMapping(Seconds(1.0), enableRanSlicing, uesPerSlice, sstPerSlice, gNbDevs, ueDevs);
 
     std::shared_ptr<LocalPeriodicSliceController> localSliceController;
 
@@ -575,8 +557,7 @@ int main(int argc, char* argv[])
         Ptr<Ipv4> ueIpv4 = ueNodes.Get(i)->GetObject<Ipv4>();
         Ptr<Ipv4StaticRouting> ueStatic = ipv4RoutingHelper.GetStaticRouting(ueIpv4);
         ueStatic->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
-        NS_LOG_INFO("UE[" << i << "] default route: GW=" << epcHelper->GetUeDefaultGatewayAddress()
-                         << " via interface 1");
+        NS_LOG_INFO("UE[" << i << "] default route: GW=" << epcHelper->GetUeDefaultGatewayAddress() << " via interface 1");
     }
 
     // Applications: UDP sinks on UEs and OnOff sources on remoteHost (downlink)

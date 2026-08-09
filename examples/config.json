@@ -29,6 +29,15 @@
     },
     "pause": 0.0
   },
+  "channel": {
+    "_comment": "3GPP propagation, channel condition and fast-fading parameters.",
+    "scenario": "UMa",
+    "condition": "Default",
+    "model": "ThreeGpp",
+    "shadowingEnabled": false,
+    "conditionUpdatePeriod": 0.0,
+    "channelUpdatePeriod": 0.0
+  },
   "simulation": {
     "_comment": "Global simulation parameters.",
     "duration": 5,
