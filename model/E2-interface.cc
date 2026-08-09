@@ -51,6 +51,25 @@ namespace ns3
 NS_LOG_COMPONENT_DEFINE("E2Interface");
 NS_OBJECT_ENSURE_REGISTERED(E2Interface);
 
+namespace
+{
+uint64_t
+CurrentUnixTimeNs()
+{
+    const auto unixNanoseconds =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count();
+
+    if (unixNanoseconds < 0)
+    {
+        throw std::runtime_error("system clock is before the Unix epoch");
+    }
+
+    return static_cast<uint64_t>(unixNanoseconds);
+}
+}
+
 E2Interface::E2Interface()
 {
     NS_FATAL_ERROR("E2Interface must be created with a net device");
@@ -642,7 +661,7 @@ E2Interface::PollKpmRequests()
     }
 
 #ifdef NORI_ENABLE_RC_V5_CODEC
-    std::optional<RcV5ControlRequest> pendingRcControl;
+    std::optional<PendingRcV5ControlRequest> pendingRcControl;
 
     {
         std::lock_guard<std::mutex> lock(m_rcControlMutex);
@@ -656,12 +675,28 @@ E2Interface::PollKpmRequests()
 
     if (pendingRcControl.has_value())
     {
+        const PendingRcV5ControlRequest& pendingControl = pendingRcControl.value();
+        const RcV5ControlRequest& control = pendingControl.control;
+        const uint64_t processingStartedAtUnixNs = CurrentUnixTimeNs();
+        const int64_t processingStartedAtSimulationNs = Simulator::Now().GetNanoSeconds();
+        const double queueToProcessingMs = static_cast<double>(processingStartedAtUnixNs - pendingControl.queuedAtUnixNs) / 1e6;
+
+        NS_LOG_INFO(
+            "[NEST LATENCY] event=ric-control-processing-started"
+            << " requestorId=" << pendingControl.requestorId
+            << " instanceId=" << pendingControl.instanceId
+            << " ranFunctionId=" << pendingControl.ranFunctionId
+            << " queuedAtUnixNs=" << pendingControl.queuedAtUnixNs
+            << " processingStartedAtUnixNs=" << processingStartedAtUnixNs
+            << " simulationTimeNs=" << processingStartedAtSimulationNs
+            << " queueToProcessingMs=" << queueToProcessingMs);
+
         NS_LOG_INFO("[RC V5] Processing queued control request in the simulator thread");
 
         std::vector<RicControlMessage::SlicePRBQuota> schedulerQuotas;
-        schedulerQuotas.reserve(pendingRcControl->sliceQuotas.size());
+        schedulerQuotas.reserve(control.sliceQuotas.size());
 
-        for (const RcV5SliceQuota& quota : pendingRcControl->sliceQuotas)
+        for (const RcV5SliceQuota& quota : control.sliceQuotas)
         {
             RicControlMessage::SlicePRBQuota schedulerQuota;
             schedulerQuota.sliceId = quota.sst;
@@ -695,10 +730,27 @@ E2Interface::PollKpmRequests()
             {
                 rlScheduler->SetSlicingParameters(schedulerQuotas);
 
-                NS_LOG_INFO("[RC V5] Applied Style " << pendingRcControl->controlStyle
-                                                     << ", Action " << pendingRcControl->controlAction
-                                                     << " with " << schedulerQuotas.size()
-                                                     << " slice quotas");
+                const uint64_t applicationCompletedAtUnixNs = CurrentUnixTimeNs();
+                const int64_t applicationCompletedAtSimulationNs = Simulator::Now().GetNanoSeconds();
+                const double callbackToApplicationMs = static_cast<double>(applicationCompletedAtUnixNs - pendingControl.callbackReceivedAtUnixNs) / 1e6;
+                const double queueToApplicationMs = static_cast<double>(applicationCompletedAtUnixNs - pendingControl.queuedAtUnixNs) / 1e6;
+                const double processingToApplicationMs = static_cast<double>(applicationCompletedAtUnixNs - processingStartedAtUnixNs) / 1e6;
+
+                NS_LOG_INFO(
+                    "[NEST LATENCY] event=ric-control-applied"
+                    << " requestorId=" << pendingControl.requestorId
+                    << " instanceId=" << pendingControl.instanceId
+                    << " ranFunctionId=" << pendingControl.ranFunctionId
+                    << " callbackReceivedAtUnixNs=" << pendingControl.callbackReceivedAtUnixNs
+                    << " queuedAtUnixNs=" << pendingControl.queuedAtUnixNs
+                    << " processingStartedAtUnixNs=" << processingStartedAtUnixNs
+                    << " applicationCompletedAtUnixNs=" << applicationCompletedAtUnixNs
+                    << " simulationTimeNs=" << applicationCompletedAtSimulationNs
+                    << " callbackToApplicationMs=" << callbackToApplicationMs
+                    << " queueToApplicationMs=" << queueToApplicationMs
+                    << " processingToApplicationMs=" << processingToApplicationMs);
+
+                NS_LOG_INFO("[RC V5] Applied Style " << control.controlStyle << ", Action " << control.controlAction << " with " << schedulerQuotas.size() << " slice quotas");
             }
         }
     }
@@ -936,6 +988,8 @@ void
 E2Interface::ControlMessageReceivedCallback(E2AP_PDU_t* sub_req_pdu)
 {
 #ifdef NORI_ENABLE_RC_V5_CODEC
+    const uint64_t callbackReceivedAtUnixNs = CurrentUnixTimeNs();
+
     NS_LOG_DEBUG("[RC V5] Received RIC Control Request");
 
     const RcV5DecodeResult decodeResult = DecodeRcV5ControlRequest(sub_req_pdu);
@@ -944,6 +998,8 @@ E2Interface::ControlMessageReceivedCallback(E2AP_PDU_t* sub_req_pdu)
     {
         throw std::invalid_argument("RC v5 control request rejected: " + decodeResult.errorMessage);
     }
+
+    const encoding::ric_control_request_info requestInfo = encoding::get_control_request_info(sub_req_pdu);
 
     const RcV5ControlRequest& control = decodeResult.control;
 
@@ -974,6 +1030,13 @@ E2Interface::ControlMessageReceivedCallback(E2AP_PDU_t* sub_req_pdu)
         throw std::invalid_argument("RC v5 control request must contain exactly one quota for every configured SST");
     }
 
+    PendingRcV5ControlRequest pendingControl;
+    pendingControl.control = control;
+    pendingControl.requestorId = requestInfo.requestorId;
+    pendingControl.instanceId = requestInfo.instanceId;
+    pendingControl.ranFunctionId = requestInfo.ranFunctionId;
+    pendingControl.callbackReceivedAtUnixNs = callbackReceivedAtUnixNs;
+
     {
         std::lock_guard<std::mutex> lock(m_rcControlMutex);
 
@@ -982,8 +1045,20 @@ E2Interface::ControlMessageReceivedCallback(E2AP_PDU_t* sub_req_pdu)
             throw std::runtime_error("RC v5 control request rejected because another command is pending");
         }
 
-        m_pendingRcControl = control;
+        pendingControl.queuedAtUnixNs = CurrentUnixTimeNs();
+        m_pendingRcControl = pendingControl;
     }
+
+    const double callbackToQueueMs = static_cast<double>(pendingControl.queuedAtUnixNs - pendingControl.callbackReceivedAtUnixNs) / 1e6;
+
+    NS_LOG_INFO(
+        "[NEST LATENCY] event=ric-control-queued"
+        << " requestorId=" << pendingControl.requestorId
+        << " instanceId=" << pendingControl.instanceId
+        << " ranFunctionId=" << pendingControl.ranFunctionId
+        << " callbackReceivedAtUnixNs=" << pendingControl.callbackReceivedAtUnixNs
+        << " queuedAtUnixNs=" << pendingControl.queuedAtUnixNs
+        << " callbackToQueueMs=" << callbackToQueueMs);
 
     NS_LOG_INFO("[RC V5] Control request queued: style=" << control.controlStyle
                                                         << ", action=" << control.controlAction

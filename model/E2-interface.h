@@ -240,9 +240,19 @@ class E2Interface : public Object
     EventId m_kpmRequestPollEvent;
 
 #ifdef NORI_ENABLE_RC_V5_CODEC
+    struct PendingRcV5ControlRequest
+    {
+        RcV5ControlRequest control;
+        long requestorId{0};
+        long instanceId{0};
+        long ranFunctionId{0};
+        uint64_t callbackReceivedAtUnixNs{0};
+        uint64_t queuedAtUnixNs{0};
+    };
+
     // One decoded RC command waiting to be consumed by the ns-3 simulator thread.
     std::mutex m_rcControlMutex;
-    std::optional<RcV5ControlRequest> m_pendingRcControl;
+    std::optional<PendingRcV5ControlRequest> m_pendingRcControl;
 #endif
 
     // State of the single KPM subscription currently managed by this
