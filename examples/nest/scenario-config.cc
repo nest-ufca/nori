@@ -19,6 +19,73 @@ namespace
 {
 
 /**
+ * Parse the mandatory exclusive slice-control source.
+ */
+NestControlMode ParseNestControlMode(const nlohmann::json& configJson)
+{
+    NS_ABORT_MSG_UNLESS(configJson.contains("controlMode") && configJson["controlMode"].is_string(), "controlMode must be a string");
+
+    const std::string mode = configJson["controlMode"].get<std::string>();
+
+    if (mode == "none")
+    {
+        return NestControlMode::NONE;
+    }
+
+    if (mode == "local-actions")
+    {
+        return NestControlMode::LOCAL_ACTIONS;
+    }
+
+    if (mode == "local-controller")
+    {
+        return NestControlMode::LOCAL_CONTROLLER;
+    }
+
+    if (mode == "e2")
+    {
+        return NestControlMode::E2;
+    }
+
+    NS_ABORT_MSG("controlMode must be one of: none, local-actions, local-controller, e2");
+    return NestControlMode::NONE;
+}
+
+/**
+ * Validate that exactly the source selected by controlMode is configured.
+ */
+void ValidateNestControlMode(const NestScenarioConfig& config, bool enableRanSlicing)
+{
+    const bool hasLocalActions = !config.localPrbQuotaActions.empty();
+    const bool hasLocalController = config.localSliceController.has_value();
+
+    switch (config.controlMode)
+    {
+    case NestControlMode::NONE:
+        NS_ABORT_MSG_IF(hasLocalActions || hasLocalController, "controlMode=none does not allow localPrbQuotaActions or localSliceController");
+        break;
+
+    case NestControlMode::LOCAL_ACTIONS:
+        NS_ABORT_MSG_UNLESS(enableRanSlicing, "controlMode=local-actions requires enableRanSlicing=true");
+        NS_ABORT_MSG_UNLESS(hasLocalActions && !hasLocalController, "controlMode=local-actions requires localPrbQuotaActions and forbids localSliceController");
+        break;
+
+    case NestControlMode::LOCAL_CONTROLLER:
+        NS_ABORT_MSG_UNLESS(enableRanSlicing, "controlMode=local-controller requires enableRanSlicing=true");
+        NS_ABORT_MSG_UNLESS(hasLocalController && !hasLocalActions, "controlMode=local-controller requires localSliceController and forbids localPrbQuotaActions");
+        break;
+
+    case NestControlMode::E2:
+        NS_ABORT_MSG_UNLESS(enableRanSlicing, "controlMode=e2 requires enableRanSlicing=true");
+        NS_ABORT_MSG_IF(hasLocalActions || hasLocalController, "controlMode=e2 does not allow localPrbQuotaActions or localSliceController");
+        break;
+
+    default:
+        NS_ABORT_MSG("Unsupported controlMode value");
+    }
+}
+
+/**
  * Parse and validate all traffic profiles declared in the JSON document.
  */
 void
@@ -287,23 +354,16 @@ ParseLocalSliceController(
     bool enableRanSlicing,
     const NestScenarioConfig& scenarioConfig)
 {
-    // The local controller is optional and may also be explicitly disabled.
+    // The local controller is configured by the presence of this object.
     if (!configJson.contains("localSliceController"))
     {
         return std::nullopt;
     }
 
-    const nlohmann::json& controllerJson =
-        configJson["localSliceController"];
+    const nlohmann::json& controllerJson = configJson["localSliceController"];
 
-    NS_ABORT_MSG_UNLESS(
-        controllerJson.is_object(),
-        "localSliceController must be a JSON object");
-
-    if (!controllerJson.value("enabled", false))
-    {
-        return std::nullopt;
-    }
+    NS_ABORT_MSG_UNLESS(controllerJson.is_object(), "localSliceController must be a JSON object");
+    NS_ABORT_MSG_IF(controllerJson.contains("enabled"), "localSliceController.enabled is no longer supported; use controlMode");
 
     // Quota control requires the slice-aware NORI scheduler.
     NS_ABORT_MSG_UNLESS(
@@ -487,6 +547,28 @@ ParseE2Configuration(
 }
 
 } // namespace
+
+std::string NestControlModeToString(NestControlMode mode)
+{
+    switch (mode)
+    {
+    case NestControlMode::NONE:
+        return "none";
+
+    case NestControlMode::LOCAL_ACTIONS:
+        return "local-actions";
+
+    case NestControlMode::LOCAL_CONTROLLER:
+        return "local-controller";
+
+    case NestControlMode::E2:
+        return "e2";
+
+    default:
+        NS_ABORT_MSG("Unsupported controlMode value");
+        return "unknown";
+    }
+}
 
 /**
  * Validate E2 endpoint values and the per-gNB local port range.
@@ -685,11 +767,10 @@ LoadNestScenarioConfig(
             !std::isfinite(config.ueTxPower),
         "NR transmit powers must be finite");
 
+    config.controlMode = ParseNestControlMode(configJson);
+
     // Parse the optional E2 endpoint independently from slicing control.
-    config.e2 =
-        ParseE2Configuration(
-            configJson,
-            config.gNbNum);
+    config.e2 = ParseE2Configuration(configJson, config.gNbNum);
 
     // Parse structured traffic, slice and control configurations.
     ParseTrafficProfiles(configJson, &config);
@@ -707,13 +788,8 @@ LoadNestScenarioConfig(
             enableRanSlicing,
             config);
 
-    // Prevent two local quota sources from controlling the scheduler
-    // simultaneously.
-    NS_ABORT_MSG_IF(
-        !config.localPrbQuotaActions.empty() &&
-            config.localSliceController.has_value(),
-        "Use either localPrbQuotaActions or localSliceController, "
-        "not both");
+    // Validate the exclusive source allowed to change scheduler quotas.
+    ValidateNestControlMode(config, enableRanSlicing);
 
     return config;
 }

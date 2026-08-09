@@ -2,6 +2,7 @@
 
 #include "ns3/E2-report.h"
 #include "ns3/antenna-module.h"
+#include "ns3/boolean.h"
 #include "ns3/config-store.h"
 #include "ns3/config.h"
 #include "ns3/core-module.h"
@@ -136,7 +137,12 @@ E2TermHelper::GetTypeId()
                                           "Two- or three-digit Mobile Network Code",
                                           StringValue("01"),
                                           MakeStringAccessor(&E2TermHelper::m_mnc),
-                                          MakeStringChecker());
+                                          MakeStringChecker())
+                            .AddAttribute("EnableRicControl",
+                                          "Advertise and accept the RIC Control RAN Function",
+                                          BooleanValue(true),
+                                          MakeBooleanAccessor(&E2TermHelper::m_enableRicControl),
+                                          MakeBooleanChecker());
     return tid;
 }
 
@@ -234,12 +240,17 @@ E2TermHelper::InstallE2Term(Ptr<NetDevice> NetDevice)
     // Start the simulator-thread bridge before Simulator::Run().
     e2Messages->StartKpmRequestPolling();
 
-    auto ricFd = Create<RicControlFunctionDescription>();
-    e2Term->RegisterSmCallbackToE2Sm(300,
-                                     ricFd,
-                                     std::bind(&E2Interface::ControlMessageReceivedCallback,
-                                               e2Messages,
-                                               std::placeholders::_1));
+    if (m_enableRicControl)
+    {
+        auto ricFd = Create<RicControlFunctionDescription>();
+        e2Term->RegisterSmCallbackToE2Sm(300, ricFd, std::bind(&E2Interface::ControlMessageReceivedCallback, e2Messages, std::placeholders::_1));
+
+        NS_LOG_INFO("RIC Control RAN Function 300 enabled");
+    }
+    else
+    {
+        NS_LOG_INFO("RIC Control RAN Function 300 disabled");
+    }
 
     Simulator::Schedule(MicroSeconds(0), &E2Termination::Start, e2Term);
 

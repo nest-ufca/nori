@@ -95,11 +95,12 @@ class E2TermHelper : public Object
     NrBearerStatsConnector m_e2StatsConnector; // !< E2 PDCP connector
 
     // E2 termination attributes
-    std::string m_e2ip;     // !< E2 termination IP
-    uint16_t m_e2port;      // !< E2 termination port
-    uint16_t m_e2localPort; // !< E2 termination local port
-    std::string m_mcc;      // !< Mobile Country Code
-    std::string m_mnc;      // !< Mobile Network Code
+    std::string m_e2ip;             // !< E2 termination IP
+    uint16_t m_e2port;              // !< E2 termination port
+    uint16_t m_e2localPort;         // !< E2 termination local port
+    std::string m_mcc;              // !< Mobile Country Code
+    std::string m_mnc;              // !< Mobile Network Code
+    bool m_enableRicControl{true};  // !< Advertise and accept RIC Control
 
     // E2 messages attributes
     bool m_e2ForceLog;  // !< E2 force log

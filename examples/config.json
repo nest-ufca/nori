@@ -1,5 +1,6 @@
 {
   "_comment": "Configuration file for the nori-embb-urllc-scenario. All values use SI units unless otherwise noted.",
+  "controlMode": "none",
   "topology": {
     "_comment": "NR network topology.",
     "numGNb": 1,

@@ -13,6 +13,22 @@ namespace ns3
 {
 
 /**
+ * Selects the only source allowed to change slice PRB quotas.
+ */
+enum class NestControlMode
+{
+    NONE,
+    LOCAL_ACTIONS,
+    LOCAL_CONTROLLER,
+    E2
+};
+
+/**
+ * Return the JSON and log name of a control mode.
+ */
+std::string NestControlModeToString(NestControlMode mode);
+
+/**
  * Traffic generation parameters associated with one service profile.
  */
 struct NestTrafficProfile
@@ -60,6 +76,9 @@ struct NestScenarioConfig
     uint16_t numerology{0};
     double txPower{0.0};
     double ueTxPower{0.0};
+
+    // Exclusive source allowed to change slice PRB quotas.
+    NestControlMode controlMode{NestControlMode::NONE};
 
     // Optional E2 connection. Disabled configurations remain fully offline.
     NestE2Config e2;

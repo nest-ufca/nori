@@ -224,6 +224,12 @@ int main(int argc, char* argv[])
 
     ValidateNestE2Config(e2Config, scenarioConfig.gNbNum);
 
+    NS_ABORT_MSG_UNLESS(scenarioConfig.controlMode != NestControlMode::E2 || e2Config.enabled, "controlMode=e2 requires E2 to be enabled after command-line overrides");
+
+    const std::string controlModeName = NestControlModeToString(scenarioConfig.controlMode);
+    std::cout << "Selected control mode: " << controlModeName << std::endl;
+    std::cout << "RIC Control RAN Function 300: " << (scenarioConfig.controlMode == NestControlMode::E2 ? "enabled" : "disabled") << std::endl;
+
     // Create immutable local aliases for the validated scenario parameters.
     // Vector and map aliases use references to avoid unnecessary copies.
     const uint16_t gNbNum =
@@ -504,36 +510,23 @@ int main(int argc, char* argv[])
 
     if (e2Config.enabled)
     {
-        e2TermHelper =
-            CreateObject<E2TermHelper>();
+        e2TermHelper = CreateObject<E2TermHelper>();
 
-        e2TermHelper->SetAttribute(
-            "E2TermIp",
-            StringValue(e2Config.termAddress));
+        e2TermHelper->SetAttribute("E2TermIp", StringValue(e2Config.termAddress));
 
-        e2TermHelper->SetAttribute(
-            "E2Port",
-            UintegerValue(e2Config.termPort));
+        e2TermHelper->SetAttribute("E2Port", UintegerValue(e2Config.termPort));
 
-        e2TermHelper->SetAttribute(
-            "E2LocalPort",
-            UintegerValue(e2Config.localPortBase));
+        e2TermHelper->SetAttribute("E2LocalPort", UintegerValue(e2Config.localPortBase));
 
-        e2TermHelper->SetAttribute(
-            "Mcc",
-            StringValue(e2Config.mcc));
+        e2TermHelper->SetAttribute("Mcc", StringValue(e2Config.mcc));
 
-        e2TermHelper->SetAttribute(
-            "Mnc",
-            StringValue(e2Config.mnc));
+        e2TermHelper->SetAttribute("Mnc", StringValue(e2Config.mnc));
+
+        e2TermHelper->SetAttribute("EnableRicControl", BooleanValue(scenarioConfig.controlMode == NestControlMode::E2));
 
         e2TermHelper->InstallE2Term(gNbDevs);
 
-        NS_LOG_INFO(
-            "E2 enabled: "
-            << e2Config.termAddress
-            << ":"
-            << e2Config.termPort);
+        NS_LOG_INFO("E2 enabled: " << e2Config.termAddress << ":" << e2Config.termPort);
     }
 
     nrHelper->AttachToClosestGnb(ueDevs, gNbDevs);
@@ -546,20 +539,15 @@ int main(int argc, char* argv[])
                                             gNbDevs,
                                             ueDevs);
 
-    std::shared_ptr<LocalPeriodicSliceController>
-        localSliceController;
+    std::shared_ptr<LocalPeriodicSliceController> localSliceController;
 
     // Create the optional closed-loop controller and schedule its initial
     // quota distribution after the UE-to-slice mapping has been installed.
     if (scenarioConfig.localSliceController.has_value())
     {
-        const LocalSliceControllerConfig& controllerConfig =
-            scenarioConfig.localSliceController.value();
+        const LocalSliceControllerConfig& controllerConfig = scenarioConfig.localSliceController.value();
 
-        localSliceController =
-            std::make_shared<LocalPeriodicSliceController>(
-                controllerConfig,
-                gNbDevs);
+        localSliceController = std::make_shared<LocalPeriodicSliceController>(controllerConfig, gNbDevs);
 
         Simulator::Schedule(
             Seconds(controllerConfig.initialApplyTime),
