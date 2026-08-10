@@ -38,6 +38,23 @@
     "conditionUpdatePeriod": 0.0,
     "channelUpdatePeriod": 0.0
   },
+  "antennas": {
+    "_comment": "gNB and UE arrays plus their shared beamforming behavior.",
+    "gnb": {
+      "rows": 1,
+      "columns": 1,
+      "elementModel": "Isotropic"
+    },
+    "ue": {
+      "rows": 1,
+      "columns": 1,
+      "elementModel": "Isotropic"
+    },
+    "beamforming": {
+      "mode": "quasi-omni",
+      "updatePeriod": 0.0
+    }
+  },
   "simulation": {
     "_comment": "Global simulation parameters.",
     "duration": 5,

@@ -69,6 +69,66 @@ struct NestChannelConfig
 };
 
 /**
+ * Radiation pattern used by one antenna-array element.
+ */
+enum class NestAntennaElementModel
+{
+    ISOTROPIC,
+    THREE_GPP
+};
+
+/**
+ * Return the JSON and log name of an antenna-element model.
+ */
+std::string NestAntennaElementModelToString(NestAntennaElementModel model);
+
+/**
+ * One uniform planar antenna array.
+ */
+struct NestAntennaArrayConfig
+{
+    uint32_t rows{1};
+    uint32_t columns{1};
+    NestAntennaElementModel elementModel{NestAntennaElementModel::ISOTROPIC};
+};
+
+/**
+ * Beamforming behavior shared by the gNB and UE arrays.
+ */
+enum class NestBeamformingMode
+{
+    QUASI_OMNI,
+    IDEAL_DIRECT_PATH
+};
+
+/**
+ * Return the JSON and log name of a beamforming mode.
+ */
+std::string NestBeamformingModeToString(NestBeamformingMode mode);
+
+/**
+ * Beamforming configuration.
+ *
+ * The update period uses seconds. Quasi-omni requires zero, while
+ * ideal-direct-path requires a strictly positive update period.
+ */
+struct NestBeamformingConfig
+{
+    NestBeamformingMode mode{NestBeamformingMode::QUASI_OMNI};
+    double updatePeriod{0.0};
+};
+
+/**
+ * Complete antenna configuration for both radio endpoints.
+ */
+struct NestAntennasConfig
+{
+    NestAntennaArrayConfig gnb;
+    NestAntennaArrayConfig ue;
+    NestBeamformingConfig beamforming;
+};
+
+/**
  * Traffic generation parameters associated with one service profile.
  */
 struct NestTrafficProfile
@@ -135,6 +195,9 @@ struct NestScenarioConfig
 
     // Radio propagation, channel condition and fast-fading configuration.
     NestChannelConfig channel;
+
+    // Antenna arrays, element patterns and beamforming configuration.
+    NestAntennasConfig antennas;
 
     // Simulation timing and reproducibility.
     double simTime{10.0};

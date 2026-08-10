@@ -9,6 +9,7 @@
 #include "ns3/nr-ue-net-device.h"
 #include "ns3/applications-module.h"
 #include "ns3/core-module.h"
+#include "ns3/three-gpp-antenna-model.h"
 #include "ns3/flow-monitor-module.h"
 #include "ns3/internet-module.h"
 #include "ns3/isotropic-antenna-model.h"
@@ -159,6 +160,10 @@ int main(int argc, char* argv[])
     std::cout << "Channel shadowing: " << (scenarioConfig.channel.shadowingEnabled ? "enabled" : "disabled") << std::endl;
     std::cout << "Channel condition update period: " << scenarioConfig.channel.conditionUpdatePeriod << " s" << std::endl;
     std::cout << "Channel realization update period: " << scenarioConfig.channel.channelUpdatePeriod << " s" << std::endl;
+    std::cout << "gNB antenna: " << scenarioConfig.antennas.gnb.rows << "x" << scenarioConfig.antennas.gnb.columns << " element=" << NestAntennaElementModelToString(scenarioConfig.antennas.gnb.elementModel) << std::endl;
+    std::cout << "UE antenna: " << scenarioConfig.antennas.ue.rows << "x" << scenarioConfig.antennas.ue.columns << " element=" << NestAntennaElementModelToString(scenarioConfig.antennas.ue.elementModel) << std::endl;
+    std::cout << "Beamforming mode: " << NestBeamformingModeToString(scenarioConfig.antennas.beamforming.mode) << std::endl;
+    std::cout << "Beamforming update period: " << scenarioConfig.antennas.beamforming.updatePeriod << " s" << std::endl;
 
     NestE2Config e2Config = scenarioConfig.e2;
 
@@ -280,6 +285,14 @@ int main(int argc, char* argv[])
 
     Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
 
+    if (scenarioConfig.antennas.beamforming.mode == NestBeamformingMode::IDEAL_DIRECT_PATH)
+    {
+        Ptr<IdealBeamformingHelper> beamformingHelper = CreateObject<IdealBeamformingHelper>();
+        beamformingHelper->SetAttribute("BeamformingMethod", TypeIdValue(DirectPathBeamforming::GetTypeId()));
+        beamformingHelper->SetAttribute("BeamformingPeriodicity", TimeValue(Seconds(scenarioConfig.antennas.beamforming.updatePeriod)));
+        nrHelper->SetBeamformingHelper(beamformingHelper);
+    }
+
     nrHelper->SetAttribute("UseIdealRrc", BooleanValue(true));
     nrHelper->SetGnbPhyAttribute("TbDecodeLatency", TimeValue(MicroSeconds(1.0)));
     nrHelper->SetUePhyAttribute("TbDecodeLatency", TimeValue(MicroSeconds(1.0)));
@@ -384,14 +397,30 @@ int main(int argc, char* argv[])
         }
     }
 
-    // Antennas and channel
-    nrHelper->SetUeAntennaAttribute("NumRows", UintegerValue(1));
-    nrHelper->SetUeAntennaAttribute("NumColumns", UintegerValue(1));
-    nrHelper->SetUeAntennaAttribute("AntennaElement", PointerValue(CreateObject<IsotropicAntennaModel>()));
+    // Configure antenna arrays before installing the NR devices.
+    const auto createAntennaElement = [](NestAntennaElementModel model) -> Ptr<AntennaModel>
+    {
+        if (model == NestAntennaElementModel::ISOTROPIC)
+        {
+            return CreateObject<IsotropicAntennaModel>();
+        }
 
-    nrHelper->SetGnbAntennaAttribute("NumRows", UintegerValue(1));
-    nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(1));
-    nrHelper->SetGnbAntennaAttribute("AntennaElement", PointerValue(CreateObject<IsotropicAntennaModel>()));
+        if (model == NestAntennaElementModel::THREE_GPP)
+        {
+            return CreateObject<ThreeGppAntennaModel>();
+        }
+
+        NS_ABORT_MSG("Unsupported antenna-element model");
+        return nullptr;
+    };
+
+    nrHelper->SetGnbAntennaAttribute("NumRows", UintegerValue(scenarioConfig.antennas.gnb.rows));
+    nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(scenarioConfig.antennas.gnb.columns));
+    nrHelper->SetGnbAntennaAttribute("AntennaElement", PointerValue(createAntennaElement(scenarioConfig.antennas.gnb.elementModel)));
+
+    nrHelper->SetUeAntennaAttribute("NumRows", UintegerValue(scenarioConfig.antennas.ue.rows));
+    nrHelper->SetUeAntennaAttribute("NumColumns", UintegerValue(scenarioConfig.antennas.ue.columns));
+    nrHelper->SetUeAntennaAttribute("AntennaElement", PointerValue(createAntennaElement(scenarioConfig.antennas.ue.elementModel)));
 
     BandwidthPartInfoPtrVector allBwps;
     CcBwpCreator ccBwpCreator;
@@ -662,7 +691,7 @@ int main(int argc, char* argv[])
                         << "): port " << port << " type " << resolvedTrafficType);
 
             OnOffHelper trafficApp("ns3::UdpSocketFactory", InetSocketAddress(ueAddr, port));
-            trafficApp.SetAttribute("DataRate",DataRateValue(DataRate(static_cast<uint64_t>(profile.dataRateMbps * 1e6))));
+            trafficApp.SetAttribute("DataRate", DataRateValue(DataRate(static_cast<uint64_t>(profile.dataRateMbps * 1e6))));
             trafficApp.SetAttribute("PacketSize", UintegerValue(profile.packetSize));
 
             std::string onTimeStr ="ns3::ExponentialRandomVariable[Mean=" + std::to_string(profile.onTimeSeconds) +"]";

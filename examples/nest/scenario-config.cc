@@ -258,6 +258,86 @@ void ParseChannelConfiguration(const nlohmann::json& channelJson, NestScenarioCo
 }
 
 /**
+ * Parse and validate one antenna array.
+ */
+void ParseAntennaArrayConfiguration(const nlohmann::json& arrayJson, const std::string& endpoint, NestAntennaArrayConfig* config)
+{
+    NS_ABORT_MSG_IF(config == nullptr, "Antenna-array configuration pointer is null");
+
+    const std::string prefix = "antennas." + endpoint;
+
+    NS_ABORT_MSG_UNLESS(arrayJson.contains("rows") && arrayJson["rows"].is_number_unsigned(), prefix + ".rows must be an unsigned integer");
+    NS_ABORT_MSG_UNLESS(arrayJson.contains("columns") && arrayJson["columns"].is_number_unsigned(), prefix + ".columns must be an unsigned integer");
+    NS_ABORT_MSG_UNLESS(arrayJson.contains("elementModel") && arrayJson["elementModel"].is_string(), prefix + ".elementModel must be a string");
+
+    const uint64_t rows = arrayJson["rows"].get<uint64_t>();
+    const uint64_t columns = arrayJson["columns"].get<uint64_t>();
+    const std::string elementModel = arrayJson["elementModel"].get<std::string>();
+
+    NS_ABORT_MSG_IF(rows == 0 || rows > std::numeric_limits<uint32_t>::max(), prefix + ".rows must fit in a positive 32-bit value");
+    NS_ABORT_MSG_IF(columns == 0 || columns > std::numeric_limits<uint32_t>::max(), prefix + ".columns must fit in a positive 32-bit value");
+
+    config->rows = static_cast<uint32_t>(rows);
+    config->columns = static_cast<uint32_t>(columns);
+
+    if (elementModel == "Isotropic")
+    {
+        config->elementModel = NestAntennaElementModel::ISOTROPIC;
+    }
+    else if (elementModel == "ThreeGpp")
+    {
+        config->elementModel = NestAntennaElementModel::THREE_GPP;
+    }
+    else
+    {
+        NS_ABORT_MSG(prefix + ".elementModel must be one of: Isotropic, ThreeGpp");
+    }
+}
+
+/**
+ * Parse and validate antenna arrays and beamforming behavior.
+ */
+void ParseAntennasConfiguration(const nlohmann::json& antennasJson, NestScenarioConfig* config)
+{
+    NS_ABORT_MSG_IF(config == nullptr, "Scenario configuration pointer is null");
+    NS_ABORT_MSG_UNLESS(antennasJson.contains("gnb") && antennasJson["gnb"].is_object(), "antennas.gnb must be a JSON object");
+    NS_ABORT_MSG_UNLESS(antennasJson.contains("ue") && antennasJson["ue"].is_object(), "antennas.ue must be a JSON object");
+    NS_ABORT_MSG_UNLESS(antennasJson.contains("beamforming") && antennasJson["beamforming"].is_object(), "antennas.beamforming must be a JSON object");
+
+    NestAntennasConfig antennas;
+    ParseAntennaArrayConfiguration(antennasJson["gnb"], "gnb", &antennas.gnb);
+    ParseAntennaArrayConfiguration(antennasJson["ue"], "ue", &antennas.ue);
+
+    const nlohmann::json& beamformingJson = antennasJson["beamforming"];
+
+    NS_ABORT_MSG_UNLESS(beamformingJson.contains("mode") && beamformingJson["mode"].is_string(), "antennas.beamforming.mode must be a string");
+    NS_ABORT_MSG_UNLESS(beamformingJson.contains("updatePeriod") && beamformingJson["updatePeriod"].is_number(), "antennas.beamforming.updatePeriod must be numeric");
+
+    const std::string mode = beamformingJson["mode"].get<std::string>();
+    const double updatePeriod = beamformingJson["updatePeriod"].get<double>();
+
+    NS_ABORT_MSG_IF(!std::isfinite(updatePeriod) || updatePeriod < 0.0, "antennas.beamforming.updatePeriod must be finite and non-negative");
+
+    if (mode == "quasi-omni")
+    {
+        NS_ABORT_MSG_IF(updatePeriod != 0.0, "antennas.beamforming.updatePeriod must be zero in quasi-omni mode");
+        antennas.beamforming.mode = NestBeamformingMode::QUASI_OMNI;
+    }
+    else if (mode == "ideal-direct-path")
+    {
+        NS_ABORT_MSG_IF(updatePeriod <= 0.0, "antennas.beamforming.updatePeriod must be greater than zero in ideal-direct-path mode");
+        antennas.beamforming.mode = NestBeamformingMode::IDEAL_DIRECT_PATH;
+    }
+    else
+    {
+        NS_ABORT_MSG("antennas.beamforming.mode must be one of: quasi-omni, ideal-direct-path");
+    }
+
+    antennas.beamforming.updatePeriod = updatePeriod;
+    config->antennas = antennas;
+}
+
+/**
  * Parse and validate all traffic profiles declared in the JSON document.
  */
 void ParseTrafficProfiles(const nlohmann::json& configJson, NestScenarioConfig* config)
@@ -585,6 +665,38 @@ std::string NestMobilityModelToString(NestMobilityModel model)
     }
 }
 
+std::string NestAntennaElementModelToString(NestAntennaElementModel model)
+{
+    switch (model)
+    {
+    case NestAntennaElementModel::ISOTROPIC:
+        return "Isotropic";
+
+    case NestAntennaElementModel::THREE_GPP:
+        return "ThreeGpp";
+
+    default:
+        NS_ABORT_MSG("Unsupported antenna-element model");
+        return "unknown";
+    }
+}
+
+std::string NestBeamformingModeToString(NestBeamformingMode mode)
+{
+    switch (mode)
+    {
+    case NestBeamformingMode::QUASI_OMNI:
+        return "quasi-omni";
+
+    case NestBeamformingMode::IDEAL_DIRECT_PATH:
+        return "ideal-direct-path";
+
+    default:
+        NS_ABORT_MSG("Unsupported beamforming mode");
+        return "unknown";
+    }
+}
+
 /**
  * Validate E2 endpoint values and the per-gNB local port range.
  */
@@ -651,14 +763,17 @@ NestScenarioConfig LoadNestScenarioConfig(const std::string& configFilePath, boo
 
     NS_ABORT_MSG_UNLESS(configJson.contains("channel") && configJson["channel"].is_object(), "The scenario must contain a channel object");
 
+    NS_ABORT_MSG_UNLESS(configJson.contains("antennas") && configJson["antennas"].is_object(), "The scenario must contain an antennas object");
+
     NS_ABORT_MSG_UNLESS(configJson.contains("simulation") && configJson["simulation"].is_object(), "The scenario must contain a simulation object");
 
     NS_ABORT_MSG_UNLESS(configJson.contains("NR") && configJson["NR"].is_object(), "The scenario must contain an NR object");
 
-    // Parse topology, mobility, channel, simulation and NR parameters.
+    // Parse topology, mobility, channel, antennas, simulation and NR parameters.
     ParseTopologyConfiguration(configJson["topology"], &config);
     ParseMobilityConfiguration(configJson["mobility"], &config);
     ParseChannelConfiguration(configJson["channel"], &config);
+    ParseAntennasConfiguration(configJson["antennas"], &config);
 
     const nlohmann::json& simulationJson = configJson["simulation"];
 
