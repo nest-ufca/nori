@@ -268,17 +268,29 @@ void ParseAntennaArrayConfiguration(const nlohmann::json& arrayJson, const std::
 
     NS_ABORT_MSG_UNLESS(arrayJson.contains("rows") && arrayJson["rows"].is_number_unsigned(), prefix + ".rows must be an unsigned integer");
     NS_ABORT_MSG_UNLESS(arrayJson.contains("columns") && arrayJson["columns"].is_number_unsigned(), prefix + ".columns must be an unsigned integer");
+    NS_ABORT_MSG_UNLESS(arrayJson.contains("horizontalPorts") && arrayJson["horizontalPorts"].is_number_unsigned(), prefix + ".horizontalPorts must be an unsigned integer");
+    NS_ABORT_MSG_UNLESS(arrayJson.contains("verticalPorts") && arrayJson["verticalPorts"].is_number_unsigned(), prefix + ".verticalPorts must be an unsigned integer");
+    NS_ABORT_MSG_UNLESS(arrayJson.contains("dualPolarized") && arrayJson["dualPolarized"].is_boolean(), prefix + ".dualPolarized must be a boolean");
     NS_ABORT_MSG_UNLESS(arrayJson.contains("elementModel") && arrayJson["elementModel"].is_string(), prefix + ".elementModel must be a string");
 
     const uint64_t rows = arrayJson["rows"].get<uint64_t>();
     const uint64_t columns = arrayJson["columns"].get<uint64_t>();
+    const uint64_t horizontalPorts = arrayJson["horizontalPorts"].get<uint64_t>();
+    const uint64_t verticalPorts = arrayJson["verticalPorts"].get<uint64_t>();
     const std::string elementModel = arrayJson["elementModel"].get<std::string>();
 
     NS_ABORT_MSG_IF(rows == 0 || rows > std::numeric_limits<uint32_t>::max(), prefix + ".rows must fit in a positive 32-bit value");
     NS_ABORT_MSG_IF(columns == 0 || columns > std::numeric_limits<uint32_t>::max(), prefix + ".columns must fit in a positive 32-bit value");
+    NS_ABORT_MSG_IF(horizontalPorts == 0 || horizontalPorts > std::numeric_limits<uint16_t>::max(), prefix + ".horizontalPorts must fit in a positive 16-bit value");
+    NS_ABORT_MSG_IF(verticalPorts == 0 || verticalPorts > std::numeric_limits<uint16_t>::max(), prefix + ".verticalPorts must fit in a positive 16-bit value");
+    NS_ABORT_MSG_IF(columns % horizontalPorts != 0, prefix + ".horizontalPorts must divide antennas." + endpoint + ".columns");
+    NS_ABORT_MSG_IF(rows % verticalPorts != 0, prefix + ".verticalPorts must divide antennas." + endpoint + ".rows");
 
     config->rows = static_cast<uint32_t>(rows);
     config->columns = static_cast<uint32_t>(columns);
+    config->horizontalPorts = static_cast<uint16_t>(horizontalPorts);
+    config->verticalPorts = static_cast<uint16_t>(verticalPorts);
+    config->dualPolarized = arrayJson["dualPolarized"].get<bool>();
 
     if (elementModel == "Isotropic")
     {
@@ -335,6 +347,66 @@ void ParseAntennasConfiguration(const nlohmann::json& antennasJson, NestScenario
 
     antennas.beamforming.updatePeriod = updatePeriod;
     config->antennas = antennas;
+}
+
+/**
+ * Parse and validate downlink MIMO feedback and RI/PMI selection.
+ */
+void ParseMimoConfiguration(const nlohmann::json& mimoJson, NestScenarioConfig* config)
+{
+    NS_ABORT_MSG_IF(config == nullptr, "Scenario configuration pointer is null");
+
+    NS_ABORT_MSG_UNLESS(mimoJson.contains("enabled") && mimoJson["enabled"].is_boolean(), "mimo.enabled must be a boolean");
+    NS_ABORT_MSG_UNLESS(mimoJson.contains("csiFeedbackFlags") && mimoJson["csiFeedbackFlags"].is_number_unsigned(), "mimo.csiFeedbackFlags must be an unsigned integer");
+    NS_ABORT_MSG_UNLESS(mimoJson.contains("widebandPmiUpdateInterval") && mimoJson["widebandPmiUpdateInterval"].is_number(), "mimo.widebandPmiUpdateInterval must be numeric");
+    NS_ABORT_MSG_UNLESS(mimoJson.contains("subbandPmiUpdateInterval") && mimoJson["subbandPmiUpdateInterval"].is_number(), "mimo.subbandPmiUpdateInterval must be numeric");
+    NS_ABORT_MSG_UNLESS(mimoJson.contains("pmSearchMethod") && mimoJson["pmSearchMethod"].is_string(), "mimo.pmSearchMethod must be a string");
+    NS_ABORT_MSG_UNLESS(mimoJson.contains("codebook") && mimoJson["codebook"].is_string(), "mimo.codebook must be a string");
+    NS_ABORT_MSG_UNLESS(mimoJson.contains("rankLimit") && mimoJson["rankLimit"].is_number_unsigned(), "mimo.rankLimit must be an unsigned integer");
+    NS_ABORT_MSG_UNLESS(mimoJson.contains("subbandSize") && mimoJson["subbandSize"].is_number_unsigned(), "mimo.subbandSize must be an unsigned integer");
+    NS_ABORT_MSG_UNLESS(mimoJson.contains("downsamplingTechnique") && mimoJson["downsamplingTechnique"].is_string(), "mimo.downsamplingTechnique must be a string");
+
+    const bool enabled = mimoJson["enabled"].get<bool>();
+    const uint64_t csiFeedbackFlags = mimoJson["csiFeedbackFlags"].get<uint64_t>();
+    const double widebandPmiUpdateInterval = mimoJson["widebandPmiUpdateInterval"].get<double>();
+    const double subbandPmiUpdateInterval = mimoJson["subbandPmiUpdateInterval"].get<double>();
+    const std::string pmSearchMethod = mimoJson["pmSearchMethod"].get<std::string>();
+    const std::string codebook = mimoJson["codebook"].get<std::string>();
+    const uint64_t rankLimit = mimoJson["rankLimit"].get<uint64_t>();
+    const uint64_t subbandSize = mimoJson["subbandSize"].get<uint64_t>();
+    const std::string downsamplingTechnique = mimoJson["downsamplingTechnique"].get<std::string>();
+
+    const std::set<uint64_t> supportedCsiFeedbackFlags{1, 2, 3, 6, 7, 8};
+
+    NS_ABORT_MSG_IF(supportedCsiFeedbackFlags.find(csiFeedbackFlags) == supportedCsiFeedbackFlags.end(), "mimo.csiFeedbackFlags must be one of: 1, 2, 3, 6, 7, 8");
+    NS_ABORT_MSG_IF(enabled && csiFeedbackFlags == 8, "mimo.csiFeedbackFlags cannot select PDSCH_SISO when MIMO is enabled");
+    NS_ABORT_MSG_IF(!std::isfinite(widebandPmiUpdateInterval) || widebandPmiUpdateInterval <= 0.0, "mimo.widebandPmiUpdateInterval must be finite and greater than zero");
+    NS_ABORT_MSG_IF(!std::isfinite(subbandPmiUpdateInterval) || subbandPmiUpdateInterval <= 0.0, "mimo.subbandPmiUpdateInterval must be finite and greater than zero");
+    NS_ABORT_MSG_IF(subbandPmiUpdateInterval > widebandPmiUpdateInterval, "mimo.subbandPmiUpdateInterval cannot exceed mimo.widebandPmiUpdateInterval");
+    NS_ABORT_MSG_IF(pmSearchMethod != "Full", "mimo.pmSearchMethod must be Full");
+    NS_ABORT_MSG_IF(codebook != "TwoPort", "mimo.codebook must be TwoPort");
+    NS_ABORT_MSG_IF(rankLimit == 0 || rankLimit > 2, "mimo.rankLimit must be 1 or 2 for the TwoPort codebook");
+    NS_ABORT_MSG_IF(subbandSize == 0 || subbandSize > std::numeric_limits<uint8_t>::max(), "mimo.subbandSize must fit in a positive 8-bit value");
+    NS_ABORT_MSG_IF(downsamplingTechnique != "FirstPRB", "mimo.downsamplingTechnique must be FirstPRB");
+
+    const uint64_t gnbPorts = (config->antennas.gnb.dualPolarized ? 2u : 1u) * config->antennas.gnb.horizontalPorts * config->antennas.gnb.verticalPorts;
+    const uint64_t uePorts = (config->antennas.ue.dualPolarized ? 2u : 1u) * config->antennas.ue.horizontalPorts * config->antennas.ue.verticalPorts;
+    const uint64_t maximumRank = std::min(gnbPorts, uePorts);
+
+    NS_ABORT_MSG_IF(gnbPorts > 2, "mimo.codebook=TwoPort requires at most two configured gNB antenna ports");
+    NS_ABORT_MSG_IF(rankLimit > maximumRank, "mimo.rankLimit cannot exceed the configured antenna-port count");
+    NS_ABORT_MSG_IF(enabled && (gnbPorts < 2 || uePorts < 2), "mimo.enabled=true requires at least two antenna ports at both endpoints");
+    NS_ABORT_MSG_IF(enabled && (config->antennas.gnb.elementModel != NestAntennaElementModel::THREE_GPP || config->antennas.ue.elementModel != NestAntennaElementModel::THREE_GPP), "mimo.enabled=true requires ThreeGpp antenna elements at both endpoints");
+
+    config->mimo.enabled = enabled;
+    config->mimo.csiFeedbackFlags = static_cast<uint8_t>(csiFeedbackFlags);
+    config->mimo.widebandPmiUpdateInterval = widebandPmiUpdateInterval;
+    config->mimo.subbandPmiUpdateInterval = subbandPmiUpdateInterval;
+    config->mimo.pmSearchMethod = pmSearchMethod;
+    config->mimo.codebook = codebook;
+    config->mimo.rankLimit = static_cast<uint8_t>(rankLimit);
+    config->mimo.subbandSize = static_cast<uint8_t>(subbandSize);
+    config->mimo.downsamplingTechnique = downsamplingTechnique;
 }
 
 /**
@@ -765,15 +837,18 @@ NestScenarioConfig LoadNestScenarioConfig(const std::string& configFilePath, boo
 
     NS_ABORT_MSG_UNLESS(configJson.contains("antennas") && configJson["antennas"].is_object(), "The scenario must contain an antennas object");
 
+    NS_ABORT_MSG_UNLESS(configJson.contains("mimo") && configJson["mimo"].is_object(), "The scenario must contain a mimo object");
+
     NS_ABORT_MSG_UNLESS(configJson.contains("simulation") && configJson["simulation"].is_object(), "The scenario must contain a simulation object");
 
     NS_ABORT_MSG_UNLESS(configJson.contains("NR") && configJson["NR"].is_object(), "The scenario must contain an NR object");
 
-    // Parse topology, mobility, channel, antennas, simulation and NR parameters.
+    // Parse topology, mobility, channel, antennas, MIMO, simulation and NR parameters.
     ParseTopologyConfiguration(configJson["topology"], &config);
     ParseMobilityConfiguration(configJson["mobility"], &config);
     ParseChannelConfiguration(configJson["channel"], &config);
     ParseAntennasConfiguration(configJson["antennas"], &config);
+    ParseMimoConfiguration(configJson["mimo"], &config);
 
     const nlohmann::json& simulationJson = configJson["simulation"];
 

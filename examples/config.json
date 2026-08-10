@@ -43,17 +43,35 @@
     "gnb": {
       "rows": 1,
       "columns": 1,
+      "horizontalPorts": 1,
+      "verticalPorts": 1,
+      "dualPolarized": false,
       "elementModel": "Isotropic"
     },
     "ue": {
       "rows": 1,
       "columns": 1,
+      "horizontalPorts": 1,
+      "verticalPorts": 1,
+      "dualPolarized": false,
       "elementModel": "Isotropic"
     },
     "beamforming": {
       "mode": "quasi-omni",
       "updatePeriod": 0.0
     }
+  },
+  "mimo": {
+    "_comment": "Downlink MIMO feedback and RI/PMI search parameters.",
+    "enabled": false,
+    "csiFeedbackFlags": 1,
+    "widebandPmiUpdateInterval": 0.01,
+    "subbandPmiUpdateInterval": 0.002,
+    "pmSearchMethod": "Full",
+    "codebook": "TwoPort",
+    "rankLimit": 1,
+    "subbandSize": 4,
+    "downsamplingTechnique": "FirstPRB"
   },
   "simulation": {
     "_comment": "Global simulation parameters.",

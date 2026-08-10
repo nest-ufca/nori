@@ -2,6 +2,7 @@
 #include "nest/scenario-config.h"
 #include "nest/slice-metrics-collector.h"
 #include "nest/slice-controller.h"
+#include "nest/mimo-feedback-trace.h"
 #include "nest/mobility-trace.h"
 #include "ns3/three-gpp-channel-model.h"
 #include "ns3/E2-term-helper.h"
@@ -9,6 +10,7 @@
 #include "ns3/nr-ue-net-device.h"
 #include "ns3/applications-module.h"
 #include "ns3/core-module.h"
+#include "ns3/nr-spectrum-value-helper.h"
 #include "ns3/three-gpp-antenna-model.h"
 #include "ns3/flow-monitor-module.h"
 #include "ns3/internet-module.h"
@@ -99,6 +101,9 @@ int main(int argc, char* argv[])
     std::ofstream mobilityTraceStream;
     double mobilityTraceInterval = 0.1;
 
+    std::string mimoTraceFilePath;
+    std::ofstream mimoTraceStream;
+
     std::string sliceMetricsFilePath;
     std::ofstream sliceMetricsStream;
     SliceMetricsCollectorState sliceMetricsState;
@@ -128,6 +133,8 @@ int main(int argc, char* argv[])
 
     cmd.AddValue("mobilityTraceInterval", "Mobility trace sampling interval in seconds", mobilityTraceInterval);
 
+    cmd.AddValue("mimoTraceFile", "CSV output path for per-UE CQI, MCS and rank feedback; empty disables the trace", mimoTraceFilePath);
+
     cmd.AddValue("sliceMetricsFile", "CSV output path for per-slice window metrics; empty disables collection", sliceMetricsFilePath);
 
     cmd.AddValue("sliceMetricsInterval", "Duration of each slice metric observation window in seconds", sliceMetricsInterval);
@@ -139,6 +146,8 @@ int main(int argc, char* argv[])
     // Load and validate all JSON-controlled network, radio, traffic and
     // slicing parameters after parsing the selected configuration path.
     const NestScenarioConfig scenarioConfig = LoadNestScenarioConfig(configFilePath, enableRanSlicing);
+
+    NS_ABORT_MSG_IF(!mimoTraceFilePath.empty() && !scenarioConfig.mimo.enabled, "MIMO feedback trace requires mimo.enabled=true");
 
     RngSeedManager::SetSeed(scenarioConfig.rngSeed);
     RngSeedManager::SetRun(scenarioConfig.rngRun);
@@ -164,6 +173,16 @@ int main(int argc, char* argv[])
     std::cout << "UE antenna: " << scenarioConfig.antennas.ue.rows << "x" << scenarioConfig.antennas.ue.columns << " element=" << NestAntennaElementModelToString(scenarioConfig.antennas.ue.elementModel) << std::endl;
     std::cout << "Beamforming mode: " << NestBeamformingModeToString(scenarioConfig.antennas.beamforming.mode) << std::endl;
     std::cout << "Beamforming update period: " << scenarioConfig.antennas.beamforming.updatePeriod << " s" << std::endl;
+    std::cout << "gNB antenna ports: horizontal=" << scenarioConfig.antennas.gnb.horizontalPorts << " vertical=" << scenarioConfig.antennas.gnb.verticalPorts << " dualPolarized=" << (scenarioConfig.antennas.gnb.dualPolarized ? "true" : "false") << std::endl;
+    std::cout << "UE antenna ports: horizontal=" << scenarioConfig.antennas.ue.horizontalPorts << " vertical=" << scenarioConfig.antennas.ue.verticalPorts << " dualPolarized=" << (scenarioConfig.antennas.ue.dualPolarized ? "true" : "false") << std::endl;
+    std::cout << "MIMO feedback: " << (scenarioConfig.mimo.enabled ? "enabled" : "disabled") << std::endl;
+
+    if (scenarioConfig.mimo.enabled)
+    {
+        std::cout << "MIMO CSI feedback flags: " << +scenarioConfig.mimo.csiFeedbackFlags << std::endl;
+        std::cout << "MIMO PMI update intervals: wideband=" << scenarioConfig.mimo.widebandPmiUpdateInterval << " s subband=" << scenarioConfig.mimo.subbandPmiUpdateInterval << " s" << std::endl;
+        std::cout << "MIMO PMI search: method=" << scenarioConfig.mimo.pmSearchMethod << " codebook=" << scenarioConfig.mimo.codebook << " rankLimit=" << +scenarioConfig.mimo.rankLimit << " subbandSize=" << +scenarioConfig.mimo.subbandSize << " downsampling=" << scenarioConfig.mimo.downsamplingTechnique << std::endl;
+    }
 
     NestE2Config e2Config = scenarioConfig.e2;
 
@@ -293,6 +312,21 @@ int main(int argc, char* argv[])
         nrHelper->SetBeamformingHelper(beamformingHelper);
     }
 
+    if (scenarioConfig.mimo.enabled)
+    {
+        NrHelper::MimoPmiParams mimoPmiParams;
+        mimoPmiParams.pmSearchMethod = std::string("ns3::NrPmSearch") + scenarioConfig.mimo.pmSearchMethod;
+        mimoPmiParams.fullSearchCb = std::string("ns3::NrCb") + scenarioConfig.mimo.codebook;
+        mimoPmiParams.rankLimit = scenarioConfig.mimo.rankLimit;
+        mimoPmiParams.subbandSize = scenarioConfig.mimo.subbandSize;
+        mimoPmiParams.downsamplingTechnique = scenarioConfig.mimo.downsamplingTechnique;
+
+        nrHelper->SetAttribute("CsiFeedbackFlags", UintegerValue(scenarioConfig.mimo.csiFeedbackFlags));
+        nrHelper->SetupMimoPmi(mimoPmiParams);
+        nrHelper->SetUePhyAttribute("WbPmiUpdateInterval", TimeValue(Seconds(scenarioConfig.mimo.widebandPmiUpdateInterval)));
+        nrHelper->SetUePhyAttribute("SbPmiUpdateInterval", TimeValue(Seconds(scenarioConfig.mimo.subbandPmiUpdateInterval)));
+    }
+
     nrHelper->SetAttribute("UseIdealRrc", BooleanValue(true));
     nrHelper->SetGnbPhyAttribute("TbDecodeLatency", TimeValue(MicroSeconds(1.0)));
     nrHelper->SetUePhyAttribute("TbDecodeLatency", TimeValue(MicroSeconds(1.0)));
@@ -416,10 +450,16 @@ int main(int argc, char* argv[])
 
     nrHelper->SetGnbAntennaAttribute("NumRows", UintegerValue(scenarioConfig.antennas.gnb.rows));
     nrHelper->SetGnbAntennaAttribute("NumColumns", UintegerValue(scenarioConfig.antennas.gnb.columns));
+    nrHelper->SetGnbAntennaAttribute("NumHorizontalPorts", UintegerValue(scenarioConfig.antennas.gnb.horizontalPorts));
+    nrHelper->SetGnbAntennaAttribute("NumVerticalPorts", UintegerValue(scenarioConfig.antennas.gnb.verticalPorts));
+    nrHelper->SetGnbAntennaAttribute("IsDualPolarized", BooleanValue(scenarioConfig.antennas.gnb.dualPolarized));
     nrHelper->SetGnbAntennaAttribute("AntennaElement", PointerValue(createAntennaElement(scenarioConfig.antennas.gnb.elementModel)));
 
     nrHelper->SetUeAntennaAttribute("NumRows", UintegerValue(scenarioConfig.antennas.ue.rows));
     nrHelper->SetUeAntennaAttribute("NumColumns", UintegerValue(scenarioConfig.antennas.ue.columns));
+    nrHelper->SetUeAntennaAttribute("NumHorizontalPorts", UintegerValue(scenarioConfig.antennas.ue.horizontalPorts));
+    nrHelper->SetUeAntennaAttribute("NumVerticalPorts", UintegerValue(scenarioConfig.antennas.ue.verticalPorts));
+    nrHelper->SetUeAntennaAttribute("IsDualPolarized", BooleanValue(scenarioConfig.antennas.ue.dualPolarized));
     nrHelper->SetUeAntennaAttribute("AntennaElement", PointerValue(createAntennaElement(scenarioConfig.antennas.ue.elementModel)));
 
     BandwidthPartInfoPtrVector allBwps;
@@ -453,6 +493,68 @@ int main(int argc, char* argv[])
 
     NetDeviceContainer gNbDevs = nrHelper->InstallGnbDevice(gNbNodes, allBwps);
     NetDeviceContainer ueDevs = nrHelper->InstallUeDevice(ueNodes, allBwps);
+
+    if (scenarioConfig.mimo.enabled)
+    {
+        Ptr<NrGnbPhy> gnbPhy = NrHelper::GetGnbPhy(gNbDevs.Get(0), 0);
+        NS_ABORT_MSG_UNLESS(gnbPhy, "Could not retrieve the first gNB PHY for MIMO validation");
+        NS_ABORT_MSG_IF(allBwps.empty(), "MIMO validation requires at least one BWP");
+
+        const uint16_t channelBandwidthUnits = static_cast<uint16_t>(allBwps.at(0).get()->m_channelBandwidth / 100000.0);
+        const uint32_t channelBandwidthHz = channelBandwidthUnits * 100000U;
+        const uint32_t subcarrierSpacing = 15000U * (1U << numerology);
+        const double rbOverhead = gnbPhy->GetRbOverhead();
+        const uint32_t prbCount = static_cast<uint32_t>(channelBandwidthHz * (1.0 - rbOverhead) / (subcarrierSpacing * NrSpectrumValueHelper::SUBCARRIERS_PER_RB));
+        const uint8_t subbandSize = scenarioConfig.mimo.subbandSize;
+        bool validSubbandSize = false;
+        std::string allowedSubbandSizes;
+
+        NS_ABORT_MSG_IF(prbCount == 0, "The configured MIMO BWP contains no PRBs");
+
+        if (prbCount < 24)
+        {
+            validSubbandSize = subbandSize == 1;
+            allowedSubbandSizes = "1";
+        }
+        else if (prbCount <= 72)
+        {
+            validSubbandSize = subbandSize == 4 || subbandSize == 8;
+            allowedSubbandSizes = "4 or 8";
+        }
+        else if (prbCount <= 144)
+        {
+            validSubbandSize = subbandSize == 8 || subbandSize == 16;
+            allowedSubbandSizes = "8 or 16";
+        }
+        else if (prbCount <= 275)
+        {
+            validSubbandSize = subbandSize == 16 || subbandSize == 32;
+            allowedSubbandSizes = "16 or 32";
+        }
+        else
+        {
+            NS_ABORT_MSG("MIMO PMI search does not support a BWP with " << prbCount << " PRBs");
+        }
+
+        NS_ABORT_MSG_UNLESS(validSubbandSize, "mimo.subbandSize=" << static_cast<uint32_t>(subbandSize) << " is invalid for a BWP with " << prbCount << " PRBs; allowed values: " << allowedSubbandSizes);
+
+        std::cout << "MIMO BWP PRBs: " << prbCount << std::endl;
+    }
+
+    if (!mimoTraceFilePath.empty())
+    {
+        mimoTraceStream.open(mimoTraceFilePath, std::ios::out | std::ios::trunc);
+        NS_ABORT_MSG_UNLESS(mimoTraceStream.is_open(), "Could not open MIMO feedback trace file: " << mimoTraceFilePath);
+
+        mimoTraceStream << "time_s,ue_index,rnti,cqi,mcs,rank\n";
+
+        for (uint32_t ueIndex = 0; ueIndex < ueDevs.GetN(); ++ueIndex)
+        {
+            auto callback = MakeBoundCallback(&WriteMimoFeedbackTrace, &mimoTraceStream, ueIndex);
+            bool connected = nrHelper->GetUePhy(ueDevs.Get(ueIndex), 0)->TraceConnectWithoutContext("CqiFeedbackTrace", callback);
+            NS_ABORT_MSG_UNLESS(connected, "Could not connect the MIMO feedback trace for UE " << ueIndex);
+        }
+    }
 
     if (!rbgTraceFilePath.empty())
     {
@@ -824,6 +926,10 @@ int main(int argc, char* argv[])
     // Run
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
+    if (mimoTraceStream.is_open())
+    {
+        mimoTraceStream.close();
+    }
     if (mobilityTraceStream.is_open())
     {
         mobilityTraceStream.close();

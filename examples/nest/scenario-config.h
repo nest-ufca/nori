@@ -89,6 +89,9 @@ struct NestAntennaArrayConfig
 {
     uint32_t rows{1};
     uint32_t columns{1};
+    uint16_t horizontalPorts{1};
+    uint16_t verticalPorts{1};
+    bool dualPolarized{false};
     NestAntennaElementModel elementModel{NestAntennaElementModel::ISOTROPIC};
 };
 
@@ -126,6 +129,25 @@ struct NestAntennasConfig
     NestAntennaArrayConfig gnb;
     NestAntennaArrayConfig ue;
     NestBeamformingConfig beamforming;
+};
+
+/**
+ * Downlink MIMO feedback and RI/PMI search configuration.
+ *
+ * PMI update intervals use seconds. The selected rank cannot exceed the
+ * number of antenna ports available at either endpoint.
+ */
+struct NestMimoConfig
+{
+    bool enabled{false};
+    uint8_t csiFeedbackFlags{1};
+    double widebandPmiUpdateInterval{0.01};
+    double subbandPmiUpdateInterval{0.002};
+    std::string pmSearchMethod{"Full"};
+    std::string codebook{"TwoPort"};
+    uint8_t rankLimit{1};
+    uint8_t subbandSize{4};
+    std::string downsamplingTechnique{"FirstPRB"};
 };
 
 /**
@@ -198,6 +220,9 @@ struct NestScenarioConfig
 
     // Antenna arrays, element patterns and beamforming configuration.
     NestAntennasConfig antennas;
+
+    // Optional downlink spatial multiplexing and RI/PMI feedback.
+    NestMimoConfig mimo;
 
     // Simulation timing and reproducibility.
     double simTime{10.0};
