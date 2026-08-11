@@ -151,6 +151,104 @@ struct NestMimoConfig
 };
 
 /**
+ * Validated QoS class identifiers for the NEST service profiles.
+ *
+ * The pinned NrHelper configures NrEpsBearer release 18. This initial
+ * contract exposes the classes required by the eMBB and URLLC references.
+ */
+enum class NestQci
+{
+    NGBR_VIDEO_TCP_DEFAULT,
+    NGBR_LOW_LAT_EMBB,
+    DGBR_DISCRETE_AUT_SMALL
+};
+
+/**
+ * Return the JSON and log name of a QoS class identifier.
+ */
+std::string NestQciToString(NestQci qci);
+
+/**
+ * Global policy used by the gNB RRC to select the RLC implementation.
+ *
+ * NS3_DEFAULT leaves the pinned helper behavior unchanged. With EPC enabled,
+ * that behavior resolves to RLC UM. PACKET_ERROR_RATE_BASED selects UM when
+ * the bearer's packet error loss rate is greater than 1e-5 and AM otherwise.
+ */
+enum class NestRlcMapping
+{
+    NS3_DEFAULT,
+    UM_ALWAYS,
+    AM_ALWAYS,
+    PACKET_ERROR_RATE_BASED
+};
+
+/**
+ * Return the JSON and log name of an RLC mapping policy.
+ */
+std::string NestRlcMappingToString(NestRlcMapping mapping);
+
+/**
+ * Global RLC selection and transmission-buffer configuration.
+ *
+ * Buffer sizes use bytes and configure the defaults used by every new
+ * instance of the corresponding RLC type.
+ */
+struct NestRlcConfig
+{
+    NestRlcMapping mapping{NestRlcMapping::NS3_DEFAULT};
+    uint32_t umMaxTxBufferSize{10 * 1024};
+    uint32_t amMaxTxBufferSize{10 * 1024};
+};
+
+/**
+ * Allocation and Retention Priority configuration.
+ *
+ * When disabled, the default NrEpsBearer ARP values are preserved. The pinned
+ * NrEpsBearer copy constructor does not preserve ARP fields, so enabled ARP is
+ * rejected until that upstream copy path is corrected.
+ */
+struct NestArpConfig
+{
+    bool enabled{false};
+    uint8_t priorityLevel{0};
+    bool preemptionCapability{false};
+    bool preemptionVulnerability{false};
+};
+
+/**
+ * QoS and bearer parameters associated with one traffic profile.
+ *
+ * GBR and MBR values use bit/s. Non-GBR bearers require all four values to
+ * remain zero. GBR and delay-critical GBR profiles require direction-aware
+ * positive values validated against the associated traffic profile.
+ */
+struct NestBearerQosConfig
+{
+    NestQci qci{NestQci::NGBR_LOW_LAT_EMBB};
+    uint64_t gbrDl{0};
+    uint64_t gbrUl{0};
+    uint64_t mbrDl{0};
+    uint64_t mbrUl{0};
+    NestArpConfig arp;
+};
+
+/**
+ * Complete QoS contract for all configured traffic profiles.
+ *
+ * The contract configures and audits the installed bearers, RLC selection and
+ * RLC transmission buffers. The current NORI slicing scheduler does not
+ * enforce 5QI priority, packet-delay budget or GBR requirements across UEs;
+ * QoS-aware inter-UE scheduling remains outside this checkpoint.
+ */
+struct NestQosConfig
+{
+    uint8_t release{18};
+    NestRlcConfig rlc;
+    std::map<std::string, NestBearerQosConfig> bearers;
+};
+
+/**
  * Transport protocol used by one traffic profile.
  */
 enum class NestTrafficProtocol
@@ -316,6 +414,9 @@ struct NestScenarioConfig
     // Traffic profiles indexed by their JSON names, such as eMBB and URLLC.
     std::map<std::string, NestTrafficProfile>
         trafficProfiles;
+
+    // QoS bearers keyed by the same profile names used by traffic and slices.
+    NestQosConfig qos;
 
     // Deterministic quota actions scheduled at predefined simulation times.
     std::vector<LocalPrbQuotaAction>

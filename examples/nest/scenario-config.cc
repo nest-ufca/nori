@@ -665,6 +665,404 @@ ParseTrafficProfiles(const nlohmann::json& configJson,
 }
 
 /**
+ * Convert one validated QoS class name into the internal representation.
+ */
+NestQci
+ParseNestQci(const std::string& value,
+             const std::string& fieldPath)
+{
+    if (value == "NGBR_VIDEO_TCP_DEFAULT")
+    {
+        return NestQci::NGBR_VIDEO_TCP_DEFAULT;
+    }
+
+    if (value == "NGBR_LOW_LAT_EMBB")
+    {
+        return NestQci::NGBR_LOW_LAT_EMBB;
+    }
+
+    if (value == "DGBR_DISCRETE_AUT_SMALL")
+    {
+        return NestQci::DGBR_DISCRETE_AUT_SMALL;
+    }
+
+    NS_ABORT_MSG(
+        fieldPath
+        << " must be one of: NGBR_VIDEO_TCP_DEFAULT, "
+        << "NGBR_LOW_LAT_EMBB, DGBR_DISCRETE_AUT_SMALL");
+
+    return NestQci::NGBR_LOW_LAT_EMBB;
+}
+
+/**
+ * Parse one non-negative integer used by the QoS contract.
+ */
+uint64_t
+ParseQosUnsignedInteger(const nlohmann::json& object,
+                        const char* field,
+                        const std::string& fieldPrefix)
+{
+    NS_ABORT_MSG_UNLESS(
+        object.contains(field) &&
+            object[field].is_number_integer(),
+        fieldPrefix << "." << field
+                    << " must be a non-negative integer");
+
+    const int64_t value =
+        object[field].get<int64_t>();
+
+    NS_ABORT_MSG_IF(
+        value < 0,
+        fieldPrefix << "." << field
+                    << " must be a non-negative integer");
+
+    return static_cast<uint64_t>(value);
+}
+
+/**
+ * Parse and validate the global RLC policy and per-profile QoS bearers.
+ */
+void
+ParseQosConfiguration(const nlohmann::json& configJson,
+                      NestScenarioConfig* config)
+{
+    NS_ABORT_MSG_IF(
+        config == nullptr,
+        "Scenario configuration pointer is null");
+
+    NS_ABORT_MSG_UNLESS(
+        configJson.contains("qos") &&
+            configJson["qos"].is_object(),
+        "The scenario must contain a qos object");
+
+    const nlohmann::json& qosJson =
+        configJson["qos"];
+
+    NS_ABORT_MSG_UNLESS(
+        qosJson.contains("release") &&
+            qosJson["release"].is_number_integer(),
+        "qos.release must be an integer");
+
+    const int64_t release =
+        qosJson["release"].get<int64_t>();
+
+    NS_ABORT_MSG_IF(
+        release != 18,
+        "qos.release must be 18 for the currently validated contract");
+
+    config->qos.release =
+        static_cast<uint8_t>(release);
+
+    NS_ABORT_MSG_UNLESS(
+        qosJson.contains("rlc") &&
+            qosJson["rlc"].is_object(),
+        "qos.rlc must be a JSON object");
+
+    const nlohmann::json& rlcJson =
+        qosJson["rlc"];
+
+    NS_ABORT_MSG_UNLESS(
+        rlcJson.contains("mapping") &&
+            rlcJson["mapping"].is_string(),
+        "qos.rlc.mapping must be a string");
+
+    const std::string mapping =
+        rlcJson["mapping"].get<std::string>();
+
+    if (mapping == "ns3-default")
+    {
+        config->qos.rlc.mapping =
+            NestRlcMapping::NS3_DEFAULT;
+    }
+    else if (mapping == "um-always")
+    {
+        config->qos.rlc.mapping =
+            NestRlcMapping::UM_ALWAYS;
+    }
+    else if (mapping == "am-always")
+    {
+        config->qos.rlc.mapping =
+            NestRlcMapping::AM_ALWAYS;
+    }
+    else if (mapping == "packet-error-rate-based")
+    {
+        config->qos.rlc.mapping =
+            NestRlcMapping::PACKET_ERROR_RATE_BASED;
+    }
+    else
+    {
+        NS_ABORT_MSG(
+            "qos.rlc.mapping must be one of: ns3-default, "
+            "um-always, am-always, packet-error-rate-based");
+    }
+
+    const uint64_t umBuffer =
+        ParseQosUnsignedInteger(
+            rlcJson,
+            "umMaxTxBufferSize",
+            "qos.rlc");
+
+    const uint64_t amBuffer =
+        ParseQosUnsignedInteger(
+            rlcJson,
+            "amMaxTxBufferSize",
+            "qos.rlc");
+
+    NS_ABORT_MSG_IF(
+        umBuffer == 0 ||
+            umBuffer >
+                std::numeric_limits<uint32_t>::max(),
+        "qos.rlc.umMaxTxBufferSize must fit in a positive "
+        "unsigned 32-bit value");
+
+    NS_ABORT_MSG_IF(
+        amBuffer == 0 ||
+            amBuffer >
+                std::numeric_limits<uint32_t>::max(),
+        "qos.rlc.amMaxTxBufferSize must fit in a positive "
+        "unsigned 32-bit value");
+
+    config->qos.rlc.umMaxTxBufferSize =
+        static_cast<uint32_t>(umBuffer);
+
+    config->qos.rlc.amMaxTxBufferSize =
+        static_cast<uint32_t>(amBuffer);
+
+    NS_ABORT_MSG_UNLESS(
+        qosJson.contains("bearers") &&
+            qosJson["bearers"].is_object(),
+        "qos.bearers must be a JSON object");
+
+    const nlohmann::json& bearersJson =
+        qosJson["bearers"];
+
+    config->qos.bearers.clear();
+    std::size_t parsedBearerCount = 0;
+
+    for (const auto& item : bearersJson.items())
+    {
+        const std::string profileName = item.key();
+        const nlohmann::json& bearerJson = item.value();
+
+        if (profileName == "_comment")
+        {
+            continue;
+        }
+
+        const std::string fieldPrefix =
+            "qos.bearers." + profileName;
+
+        NS_ABORT_MSG_UNLESS(
+            bearerJson.is_object(),
+            fieldPrefix << " must be a JSON object");
+
+        const auto trafficIterator =
+            config->trafficProfiles.find(profileName);
+
+        NS_ABORT_MSG_IF(
+            trafficIterator ==
+                config->trafficProfiles.end(),
+            fieldPrefix
+                << " does not match a configured traffic profile");
+
+        NS_ABORT_MSG_UNLESS(
+            bearerJson.contains("qci") &&
+                bearerJson["qci"].is_string(),
+            fieldPrefix << ".qci must be a string");
+
+        NestBearerQosConfig bearer;
+
+        bearer.qci =
+            ParseNestQci(
+                bearerJson["qci"].get<std::string>(),
+                fieldPrefix + ".qci");
+
+        bearer.gbrDl =
+            ParseQosUnsignedInteger(
+                bearerJson,
+                "gbrDl",
+                fieldPrefix);
+
+        bearer.gbrUl =
+            ParseQosUnsignedInteger(
+                bearerJson,
+                "gbrUl",
+                fieldPrefix);
+
+        bearer.mbrDl =
+            ParseQosUnsignedInteger(
+                bearerJson,
+                "mbrDl",
+                fieldPrefix);
+
+        bearer.mbrUl =
+            ParseQosUnsignedInteger(
+                bearerJson,
+                "mbrUl",
+                fieldPrefix);
+
+        NS_ABORT_MSG_IF(
+            bearer.mbrDl < bearer.gbrDl,
+            fieldPrefix
+                << ".mbrDl must be greater than or equal to gbrDl");
+
+        NS_ABORT_MSG_IF(
+            bearer.mbrUl < bearer.gbrUl,
+            fieldPrefix
+                << ".mbrUl must be greater than or equal to gbrUl");
+
+        const NestTrafficDirection direction =
+            trafficIterator->second.direction;
+
+        const bool hasDownlink =
+            direction != NestTrafficDirection::UPLINK;
+
+        const bool hasUplink =
+            direction != NestTrafficDirection::DOWNLINK;
+
+        if (bearer.qci ==
+            NestQci::DGBR_DISCRETE_AUT_SMALL)
+        {
+            NS_ABORT_MSG_IF(
+                hasDownlink &&
+                    (bearer.gbrDl == 0 ||
+                     bearer.mbrDl == 0),
+                fieldPrefix
+                    << " requires positive downlink GBR and MBR");
+
+            NS_ABORT_MSG_IF(
+                hasUplink &&
+                    (bearer.gbrUl == 0 ||
+                     bearer.mbrUl == 0),
+                fieldPrefix
+                    << " requires positive uplink GBR and MBR");
+
+            NS_ABORT_MSG_IF(
+                !hasDownlink &&
+                    (bearer.gbrDl != 0 ||
+                     bearer.mbrDl != 0),
+                fieldPrefix
+                    << " must use zero downlink GBR and MBR "
+                    << "for uplink-only traffic");
+
+            NS_ABORT_MSG_IF(
+                !hasUplink &&
+                    (bearer.gbrUl != 0 ||
+                     bearer.mbrUl != 0),
+                fieldPrefix
+                    << " must use zero uplink GBR and MBR "
+                    << "for downlink-only traffic");
+        }
+        else
+        {
+            NS_ABORT_MSG_IF(
+                bearer.gbrDl != 0 ||
+                    bearer.gbrUl != 0 ||
+                    bearer.mbrDl != 0 ||
+                    bearer.mbrUl != 0,
+                fieldPrefix
+                    << " must use zero GBR and MBR values "
+                    << "for a non-GBR QCI");
+        }
+
+        NS_ABORT_MSG_UNLESS(
+            bearerJson.contains("arp") &&
+                bearerJson["arp"].is_object(),
+            fieldPrefix << ".arp must be a JSON object");
+
+        const nlohmann::json& arpJson =
+            bearerJson["arp"];
+
+        NS_ABORT_MSG_UNLESS(
+            arpJson.contains("enabled") &&
+                arpJson["enabled"].is_boolean(),
+            fieldPrefix << ".arp.enabled must be a boolean");
+
+        NS_ABORT_MSG_UNLESS(
+            arpJson.contains("priorityLevel") &&
+                arpJson["priorityLevel"].is_number_integer(),
+            fieldPrefix
+                << ".arp.priorityLevel must be an integer");
+
+        NS_ABORT_MSG_UNLESS(
+            arpJson.contains("preemptionCapability") &&
+                arpJson["preemptionCapability"].is_boolean(),
+            fieldPrefix
+                << ".arp.preemptionCapability must be a boolean");
+
+        NS_ABORT_MSG_UNLESS(
+            arpJson.contains("preemptionVulnerability") &&
+                arpJson["preemptionVulnerability"].is_boolean(),
+            fieldPrefix
+                << ".arp.preemptionVulnerability must be a boolean");
+
+        bearer.arp.enabled =
+            arpJson["enabled"].get<bool>();
+
+        const int64_t priorityLevel =
+            arpJson["priorityLevel"].get<int64_t>();
+
+        bearer.arp.preemptionCapability =
+            arpJson["preemptionCapability"].get<bool>();
+
+        bearer.arp.preemptionVulnerability =
+            arpJson["preemptionVulnerability"].get<bool>();
+
+        NS_ABORT_MSG_IF(
+            bearer.arp.enabled,
+            fieldPrefix
+                << ".arp.enabled=true is not supported by the pinned "
+                << "NrEpsBearer copy path; keep ARP disabled until its "
+                << "copy semantics preserve the ARP fields");
+
+        if (bearer.arp.enabled)
+        {
+            NS_ABORT_MSG_IF(
+                priorityLevel < 1 ||
+                    priorityLevel > 15,
+                fieldPrefix
+                    << ".arp.priorityLevel must be in the range 1..15");
+
+            bearer.arp.priorityLevel =
+                static_cast<uint8_t>(priorityLevel);
+        }
+        else
+        {
+            NS_ABORT_MSG_IF(
+                priorityLevel != 0 ||
+                    bearer.arp.preemptionCapability ||
+                    bearer.arp.preemptionVulnerability,
+                fieldPrefix
+                    << ".arp must use priorityLevel=0 and false "
+                    << "preemption flags when disabled");
+        }
+
+        config->qos.bearers.emplace(
+            profileName,
+            bearer);
+
+        ++parsedBearerCount;
+    }
+
+    NS_ABORT_MSG_IF(
+        parsedBearerCount !=
+            config->trafficProfiles.size(),
+        "qos.bearers must contain exactly one entry for every "
+        "configured traffic profile");
+
+    for (const auto& trafficEntry :
+         config->trafficProfiles)
+    {
+        NS_ABORT_MSG_IF(
+            config->qos.bearers.find(
+                trafficEntry.first) ==
+                config->qos.bearers.end(),
+            "qos.bearers is missing traffic profile '"
+                << trafficEntry.first << "'");
+    }
+}
+
+/**
  * Parse and validate the UE, SST and traffic-profile mapping of each slice.
  */
 void ParseSliceConfiguration(const nlohmann::json& configJson, NestScenarioConfig* config)
@@ -931,6 +1329,45 @@ std::string NestControlModeToString(NestControlMode mode)
 }
 
 std::string
+NestQciToString(NestQci qci)
+{
+    switch (qci)
+    {
+    case NestQci::NGBR_VIDEO_TCP_DEFAULT:
+        return "NGBR_VIDEO_TCP_DEFAULT";
+
+    case NestQci::NGBR_LOW_LAT_EMBB:
+        return "NGBR_LOW_LAT_EMBB";
+
+    case NestQci::DGBR_DISCRETE_AUT_SMALL:
+        return "DGBR_DISCRETE_AUT_SMALL";
+    }
+
+    return "unknown";
+}
+
+std::string
+NestRlcMappingToString(NestRlcMapping mapping)
+{
+    switch (mapping)
+    {
+    case NestRlcMapping::NS3_DEFAULT:
+        return "ns3-default";
+
+    case NestRlcMapping::UM_ALWAYS:
+        return "um-always";
+
+    case NestRlcMapping::AM_ALWAYS:
+        return "am-always";
+
+    case NestRlcMapping::PACKET_ERROR_RATE_BASED:
+        return "packet-error-rate-based";
+    }
+
+    return "unknown";
+}
+
+std::string
 NestTrafficProtocolToString(NestTrafficProtocol protocol)
 {
     switch (protocol)
@@ -1154,6 +1591,8 @@ NestScenarioConfig LoadNestScenarioConfig(const std::string& configFilePath, boo
 
     // Parse structured traffic, slice and control configurations.
     ParseTrafficProfiles(configJson, &config);
+
+    ParseQosConfiguration(configJson, &config);
 
     ParseSliceConfiguration(configJson, &config);
 

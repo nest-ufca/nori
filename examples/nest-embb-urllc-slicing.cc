@@ -10,6 +10,9 @@
 #include "ns3/E2-term-helper.h"
 #include "ns3/E2-interface.h"
 #include "ns3/nr-ue-net-device.h"
+#include "ns3/nr-gnb-net-device.h"
+#include "ns3/nr-radio-bearer-info.h"
+#include "ns3/nr-rlc.h"
 #include "ns3/applications-module.h"
 #include "ns3/core-module.h"
 #include "ns3/nr-spectrum-value-helper.h"
@@ -64,6 +67,274 @@ bool ParseBooleanCommandLineOverride(const std::string& value, const std::string
     NS_FATAL_ERROR(optionName << " must be true, false, 1 or 0");
 
     return false;
+}
+
+/**
+ * Convert the validated JSON QoS class to the pinned NR bearer enum.
+ */
+NrEpsBearer::Qci
+ToNrEpsBearerQci(NestQci qci)
+{
+    switch (qci)
+    {
+    case NestQci::NGBR_VIDEO_TCP_DEFAULT:
+        return NrEpsBearer::NGBR_VIDEO_TCP_DEFAULT;
+
+    case NestQci::NGBR_LOW_LAT_EMBB:
+        return NrEpsBearer::NGBR_LOW_LAT_EMBB;
+
+    case NestQci::DGBR_DISCRETE_AUT_SMALL:
+        return NrEpsBearer::DGBR_DISCRETE_AUT_SMALL;
+    }
+
+    NS_ABORT_MSG("Unsupported validated QoS class");
+    return NrEpsBearer::NGBR_LOW_LAT_EMBB;
+}
+
+/**
+ * Convert the JSON RLC policy to the gNB RRC mapping enum.
+ */
+NrGnbRrc::NrEpsBearerToRlcMapping_t
+ToNrRlcMapping(NestRlcMapping mapping)
+{
+    switch (mapping)
+    {
+    case NestRlcMapping::NS3_DEFAULT:
+        return NrGnbRrc::RLC_SM_ALWAYS;
+
+    case NestRlcMapping::UM_ALWAYS:
+        return NrGnbRrc::RLC_UM_ALWAYS;
+
+    case NestRlcMapping::AM_ALWAYS:
+        return NrGnbRrc::RLC_AM_ALWAYS;
+
+    case NestRlcMapping::PACKET_ERROR_RATE_BASED:
+        return NrGnbRrc::PER_BASED;
+    }
+
+    NS_ABORT_MSG("Unsupported validated RLC mapping");
+    return NrGnbRrc::RLC_UM_ALWAYS;
+}
+
+/**
+ * Return a readable resource-type name from the Release 18 bearer table.
+ */
+const char*
+QosResourceTypeName(uint8_t resourceType)
+{
+    switch (resourceType)
+    {
+    case 0:
+        return "non-gbr";
+
+    case 1:
+        return "gbr";
+
+    case 2:
+        return "delay-critical-gbr";
+    }
+
+    return "unknown";
+}
+
+/**
+ * Resolve the RLC type expected for one validated bearer.
+ */
+const char*
+EffectiveRlcName(NestRlcMapping mapping,
+                 const NrEpsBearer& bearer)
+{
+    switch (mapping)
+    {
+    case NestRlcMapping::NS3_DEFAULT:
+    case NestRlcMapping::UM_ALWAYS:
+        return "um";
+
+    case NestRlcMapping::AM_ALWAYS:
+        return "am";
+
+    case NestRlcMapping::PACKET_ERROR_RATE_BASED:
+        return bearer.GetPacketErrorLossRate() > 1e-5
+                   ? "um"
+                   : "am";
+    }
+
+    return "unknown";
+}
+
+/**
+ * Inspect the data-radio-bearer objects created at the gNB.
+ *
+ * This reports the actual RLC implementation and its effective transmission
+ * buffer instead of relying only on the configured mapping policy.
+ */
+void
+AuditInstalledDataBearerRlc(NetDeviceContainer gnbDevices,
+                            NetDeviceContainer ueDevices)
+{
+    NS_ABORT_MSG_UNLESS(
+        gnbDevices.GetN() == 1,
+        "The current bearer RLC audit expects exactly one gNB");
+
+    Ptr<NrGnbNetDevice> gnbDevice =
+        DynamicCast<NrGnbNetDevice>(
+            gnbDevices.Get(0));
+
+    NS_ABORT_MSG_UNLESS(
+        gnbDevice,
+        "Could not retrieve the gNB device for the bearer RLC audit");
+
+    Ptr<NrGnbRrc> gnbRrc =
+        gnbDevice->GetRrc();
+
+    NS_ABORT_MSG_UNLESS(
+        gnbRrc,
+        "Could not retrieve the gNB RRC for the bearer RLC audit");
+
+    std::size_t installedBearerCount = 0;
+    std::size_t dedicatedBearerCount = 0;
+
+    for (uint32_t ueIndex = 0;
+         ueIndex < ueDevices.GetN();
+         ++ueIndex)
+    {
+        Ptr<NrUeNetDevice> ueDevice =
+            DynamicCast<NrUeNetDevice>(
+                ueDevices.Get(ueIndex));
+
+        NS_ABORT_MSG_UNLESS(
+            ueDevice && ueDevice->GetRrc(),
+            "Could not retrieve UE RRC for bearer RLC audit");
+
+        const uint16_t rnti =
+            ueDevice->GetRrc()->GetRnti();
+
+        NS_ABORT_MSG_IF(
+            rnti == 0 || !gnbRrc->HasUeManager(rnti),
+            "UE context is not ready for bearer RLC audit");
+
+        Ptr<NrUeManager> ueManager =
+            gnbRrc->GetUeManager(rnti);
+
+        ObjectMapValue dataRadioBearers;
+
+        ueManager->GetAttribute(
+            "DataRadioBearerMap",
+            dataRadioBearers);
+
+        NS_ABORT_MSG_IF(
+            dataRadioBearers.GetN() == 0,
+            "No data radio bearer was installed for UE["
+                << ueIndex << "]");
+
+        for (auto iterator = dataRadioBearers.Begin();
+             iterator != dataRadioBearers.End();
+             ++iterator)
+        {
+            const std::size_t drbId =
+                iterator->first;
+
+            Ptr<NrDataRadioBearerInfo> bearerInfo =
+                DynamicCast<NrDataRadioBearerInfo>(
+                    iterator->second);
+
+            NS_ABORT_MSG_UNLESS(
+                bearerInfo && bearerInfo->m_rlc,
+                "Data radio bearer has no installed RLC instance");
+
+            UintegerValue maxTxBufferSize;
+
+            bearerInfo->m_rlc->GetAttribute(
+                "MaxTxBufferSize",
+                maxTxBufferSize);
+
+            std::cout
+                << "Installed bearer RLC: UE["
+                << ueIndex
+                << "] rnti="
+                << rnti
+                << " drb="
+                << drbId
+                << " role="
+                << (drbId == 1
+                        ? "default"
+                        : "dedicated")
+                << " qci="
+                << static_cast<uint32_t>(
+                       bearerInfo->m_epsBearer.qci)
+                << " type="
+                << bearerInfo->m_rlc
+                       ->GetInstanceTypeId()
+                       .GetName()
+                << " maxTxBufferSize="
+                << maxTxBufferSize.Get()
+                << " bytes"
+                << " release="
+                << static_cast<uint32_t>(
+                       bearerInfo->m_epsBearer.GetRelease())
+                << " resource="
+                << QosResourceTypeName(
+                       bearerInfo->m_epsBearer.GetResourceType())
+                << " priority="
+                << static_cast<uint32_t>(
+                       bearerInfo->m_epsBearer.GetPriority())
+                << " pdbMs="
+                << bearerInfo->m_epsBearer
+                       .GetPacketDelayBudgetMs()
+                << " pelr="
+                << std::scientific
+                << bearerInfo->m_epsBearer
+                       .GetPacketErrorLossRate()
+                << std::defaultfloat
+                << " gbrDl="
+                << bearerInfo->m_epsBearer
+                       .gbrQosInfo.gbrDl
+                << " gbrUl="
+                << bearerInfo->m_epsBearer
+                       .gbrQosInfo.gbrUl
+                << " mbrDl="
+                << bearerInfo->m_epsBearer
+                       .gbrQosInfo.mbrDl
+                << " mbrUl="
+                << bearerInfo->m_epsBearer
+                       .gbrQosInfo.mbrUl
+                << std::endl;
+
+            ++installedBearerCount;
+
+            if (drbId != 1)
+            {
+                ++dedicatedBearerCount;
+            }
+        }
+    }
+
+    NS_ABORT_MSG_IF(
+        installedBearerCount !=
+            2 * ueDevices.GetN(),
+        "Expected one EPC default bearer and one dedicated bearer per UE, "
+        "but found "
+            << installedBearerCount
+            << " total bearers for "
+            << ueDevices.GetN()
+            << " UEs");
+
+    NS_ABORT_MSG_IF(
+        dedicatedBearerCount != ueDevices.GetN(),
+        "Expected exactly one dedicated bearer per UE, but found "
+            << dedicatedBearerCount
+            << " dedicated bearers for "
+            << ueDevices.GetN()
+            << " UEs");
+
+    std::cout
+        << "Installed data-bearer RLC count: total="
+        << installedBearerCount
+        << " default="
+        << installedBearerCount - dedicatedBearerCount
+        << " dedicated="
+        << dedicatedBearerCount
+        << std::endl;
 }
 
 } // namespace
@@ -436,6 +707,52 @@ int main(int argc, char* argv[])
     }
 
     Ptr<NrHelper> nrHelper = CreateObject<NrHelper>();
+
+    // Configure QoS/RLC defaults before any gNB, UE or RLC instance exists.
+    Config::SetDefault(
+        "ns3::NrEpsBearer::Release",
+        UintegerValue(scenarioConfig.qos.release));
+
+    Config::SetDefault(
+        "ns3::NrRlcUm::MaxTxBufferSize",
+        UintegerValue(
+            scenarioConfig.qos.rlc.umMaxTxBufferSize));
+
+    Config::SetDefault(
+        "ns3::NrRlcAm::MaxTxBufferSize",
+        UintegerValue(
+            scenarioConfig.qos.rlc.amMaxTxBufferSize));
+
+    Config::SetDefault(
+        "ns3::NrGnbRrc::EpsBearerToRlcMapping",
+        EnumValue(
+            ToNrRlcMapping(
+                scenarioConfig.qos.rlc.mapping)));
+
+    std::cout
+        << "QoS release: "
+        << static_cast<uint32_t>(
+               scenarioConfig.qos.release)
+        << std::endl;
+
+    std::cout
+        << "RLC mapping: "
+        << NestRlcMappingToString(
+               scenarioConfig.qos.rlc.mapping)
+        << std::endl;
+
+    std::cout
+        << "RLC transmission buffers: UM="
+        << scenarioConfig.qos.rlc.umMaxTxBufferSize
+        << " bytes AM="
+        << scenarioConfig.qos.rlc.amMaxTxBufferSize
+        << " bytes"
+        << std::endl;
+
+    std::cout
+        << "QoS scheduling scope: bearer/RLC configuration; "
+        << "no 5QI priority, PDB or GBR enforcement across UEs"
+        << std::endl;
 
     if (scenarioConfig.antennas.beamforming.mode == NestBeamformingMode::IDEAL_DIRECT_PATH)
     {
@@ -940,6 +1257,51 @@ int main(int argc, char* argv[])
         const NestTrafficProfile& profile =
             trafficProfiles.at(trafficType);
 
+        const NestBearerQosConfig& qosBearer =
+            scenarioConfig.qos.bearers.at(trafficType);
+
+        NrGbrQosInformation gbrQosInformation;
+        gbrQosInformation.gbrDl = qosBearer.gbrDl;
+        gbrQosInformation.gbrUl = qosBearer.gbrUl;
+        gbrQosInformation.mbrDl = qosBearer.mbrDl;
+        gbrQosInformation.mbrUl = qosBearer.mbrUl;
+
+        NrEpsBearer bearer(
+            ToNrEpsBearerQci(qosBearer.qci),
+            gbrQosInformation);
+
+        bearer.SetRelease(
+            scenarioConfig.qos.release);
+
+        std::cout
+            << "QoS bearer " << trafficType
+            << ": qci="
+            << NestQciToString(qosBearer.qci)
+            << " 5qi="
+            << static_cast<uint32_t>(bearer.qci)
+            << " resource="
+            << QosResourceTypeName(
+                   bearer.GetResourceType())
+            << " priority="
+            << static_cast<uint32_t>(
+                   bearer.GetPriority())
+            << " pdb="
+            << bearer.GetPacketDelayBudgetMs()
+            << " ms pelr="
+            << std::scientific
+            << bearer.GetPacketErrorLossRate()
+            << std::defaultfloat
+            << " gbrDl=" << qosBearer.gbrDl
+            << " gbrUl=" << qosBearer.gbrUl
+            << " mbrDl=" << qosBearer.mbrDl
+            << " mbrUl=" << qosBearer.mbrUl
+            << " effectiveRlc="
+            << EffectiveRlcName(
+                   scenarioConfig.qos.rlc.mapping,
+                   bearer)
+            << " arp=disabled"
+            << std::endl;
+
         const std::string socketFactory =
             profile.protocol == NestTrafficProtocol::UDP
                 ? "ns3::UdpSocketFactory"
@@ -1204,11 +1566,6 @@ int main(int argc, char* argv[])
                     << "s");
             }
 
-            // QoS selection remains intentionally unchanged until the next
-            // checkpoint dedicated to per-slice bearers and 5QI/QCI values.
-            NrEpsBearer bearer(
-                NrEpsBearer::NGBR_LOW_LAT_EMBB);
-
             nrHelper->ActivateDedicatedEpsBearer(
                 ueDevs.Get(nodeIdx),
                 bearer,
@@ -1229,6 +1586,14 @@ int main(int argc, char* argv[])
     NS_ABORT_MSG_IF(
         currentUeIndex != ueNum,
         "Slice UE mapping does not cover every installed UE");
+
+    // Dedicated bearers are established during initial attachment. Inspect
+    // their concrete RLC objects immediately before application traffic starts.
+    Simulator::Schedule(
+        Seconds(trafficStartTime) - NanoSeconds(1),
+        &AuditInstalledDataBearerRlc,
+        gNbDevs,
+        ueDevs);
 
     if (e2Config.enabled)
     {

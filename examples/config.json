@@ -124,6 +124,45 @@
       }
     }
   },
+  "qos": {
+    "_comment": "Per-profile bearers and RLC policy; the current slicing scheduler does not enforce 5QI priority, PDB or GBR across UEs.",
+    "release": 18,
+    "rlc": {
+      "_comment": "ns3-default resolves to RLC UM when EPC is enabled.",
+      "mapping": "ns3-default",
+      "umMaxTxBufferSize": 10240,
+      "amMaxTxBufferSize": 10240
+    },
+    "bearers": {
+      "_comment": "Bearer names must match the configured traffic profiles.",
+      "eMBB": {
+        "qci": "NGBR_LOW_LAT_EMBB",
+        "gbrDl": 0,
+        "gbrUl": 0,
+        "mbrDl": 0,
+        "mbrUl": 0,
+        "arp": {
+          "enabled": false,
+          "priorityLevel": 0,
+          "preemptionCapability": false,
+          "preemptionVulnerability": false
+        }
+      },
+      "URLLC": {
+        "qci": "NGBR_LOW_LAT_EMBB",
+        "gbrDl": 0,
+        "gbrUl": 0,
+        "mbrDl": 0,
+        "mbrUl": 0,
+        "arp": {
+          "enabled": false,
+          "priorityLevel": 0,
+          "preemptionCapability": false,
+          "preemptionVulnerability": false
+        }
+      }
+    }
+  },
   "slices": {
     "_comment": "RAN slicing configuration: number of UEs per slice and associated traffic type.",
     "numSlices": 2,
