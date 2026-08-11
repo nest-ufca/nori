@@ -25,6 +25,7 @@ build_lib_example(
     SOURCE_FILES nest-embb-urllc-slicing.cc
                  nest/mimo-feedback-trace.cc
                  nest/mobility-trace.cc
+                 nest/radio-link-trace.cc
                  nest/slice-metrics-collector.cc
                  nest/slice-controller.cc
                  nest/scenario-config.cc

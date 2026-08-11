@@ -4,6 +4,7 @@
 #include "nest/slice-controller.h"
 #include "nest/mimo-feedback-trace.h"
 #include "nest/mobility-trace.h"
+#include "nest/radio-link-trace.h"
 #include "ns3/three-gpp-channel-model.h"
 #include "ns3/E2-term-helper.h"
 #include "ns3/E2-interface.h"
@@ -104,6 +105,10 @@ int main(int argc, char* argv[])
     std::string mimoTraceFilePath;
     std::ofstream mimoTraceStream;
 
+    std::string radioLinkTraceFilePath;
+    std::ofstream radioLinkTraceStream;
+    NestRadioLinkTraceState radioLinkTraceState;
+
     std::string sliceMetricsFilePath;
     std::ofstream sliceMetricsStream;
     SliceMetricsCollectorState sliceMetricsState;
@@ -134,6 +139,8 @@ int main(int argc, char* argv[])
     cmd.AddValue("mobilityTraceInterval", "Mobility trace sampling interval in seconds", mobilityTraceInterval);
 
     cmd.AddValue("mimoTraceFile", "CSV output path for per-UE CQI, MCS and rank feedback; empty disables the trace", mimoTraceFilePath);
+
+    cmd.AddValue("radioLinkTraceFile", "CSV output path for correlated position, pathloss and PHY reception measurements; empty disables the trace", radioLinkTraceFilePath);
 
     cmd.AddValue("sliceMetricsFile", "CSV output path for per-slice window metrics; empty disables collection", sliceMetricsFilePath);
 
@@ -556,6 +563,38 @@ int main(int argc, char* argv[])
         }
     }
 
+    if (!radioLinkTraceFilePath.empty())
+    {
+        radioLinkTraceStream.open(radioLinkTraceFilePath, std::ios::out | std::ios::trunc);
+        NS_ABORT_MSG_UNLESS(radioLinkTraceStream.is_open(), "Could not open radio-link trace file: " << radioLinkTraceFilePath);
+
+        radioLinkTraceStream << "time_s,ue_index,node_id,rnti,cell_id,bwp_id,x,y,z,distance_m,pathloss_db,sinr_avg_db,sinr_min_db,cqi,mcs,rank,rb_count,tb_size,tbler,corrupt\n";
+        radioLinkTraceState.Initialize(&radioLinkTraceStream, gNbDevs, ueDevs);
+
+        for (uint32_t ueIndex = 0; ueIndex < ueDevs.GetN(); ++ueIndex)
+        {
+            Ptr<NrUePhy> uePhy = NrHelper::GetUePhy(ueDevs.Get(ueIndex), 0);
+            NS_ABORT_MSG_UNLESS(uePhy, "Could not retrieve UE PHY for radio-link trace");
+
+            Ptr<NrSpectrumPhy> spectrumPhy = uePhy->GetSpectrumPhy();
+            NS_ABORT_MSG_UNLESS(spectrumPhy, "Could not retrieve UE spectrum PHY for radio-link trace");
+
+            spectrumPhy->EnableDlDataPathlossTrace();
+
+            bool pathlossConnected = spectrumPhy->TraceConnectWithoutContext(
+                "DlDataPathloss",
+                MakeBoundCallback(&UpdateRadioLinkPathloss, &radioLinkTraceState, ueIndex));
+
+            NS_ABORT_MSG_UNLESS(pathlossConnected, "Could not connect DlDataPathloss for UE " << ueIndex);
+
+            bool receptionConnected = spectrumPhy->TraceConnectWithoutContext(
+                "RxPacketTraceUe",
+                MakeBoundCallback(&WriteRadioLinkReception, &radioLinkTraceState, ueIndex));
+
+            NS_ABORT_MSG_UNLESS(receptionConnected, "Could not connect RxPacketTraceUe for UE " << ueIndex);
+        }
+    }
+
     if (!rbgTraceFilePath.empty())
     {
         NS_ABORT_MSG_UNLESS(enableRanSlicing, "RBG trace requires enableRanSlicing=true");
@@ -929,6 +968,10 @@ int main(int argc, char* argv[])
     if (mimoTraceStream.is_open())
     {
         mimoTraceStream.close();
+    }
+    if (radioLinkTraceStream.is_open())
+    {
+        radioLinkTraceStream.close();
     }
     if (mobilityTraceStream.is_open())
     {
