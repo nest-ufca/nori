@@ -5,6 +5,7 @@
 #include "nest/mimo-feedback-trace.h"
 #include "nest/mobility-trace.h"
 #include "nest/radio-link-trace.h"
+#include "nest/tcp-transport-trace.h"
 #include "ns3/three-gpp-channel-model.h"
 #include "ns3/E2-term-helper.h"
 #include "ns3/E2-interface.h"
@@ -109,11 +110,15 @@ int main(int argc, char* argv[])
     std::ofstream radioLinkTraceStream;
     NestRadioLinkTraceState radioLinkTraceState;
 
+    std::string tcpTransportTraceFilePath;
+    std::ofstream tcpTransportTraceStream;
+    std::vector<std::unique_ptr<NestTcpTransportTrace>>
+        tcpTransportTraces;
+
     std::string sliceMetricsFilePath;
     std::ofstream sliceMetricsStream;
     SliceMetricsCollectorState sliceMetricsState;
 
-    double trafficStartTime = 2.0;
     double sliceMetricsInterval = 0.1;
 
     CommandLine cmd;
@@ -142,11 +147,11 @@ int main(int argc, char* argv[])
 
     cmd.AddValue("radioLinkTraceFile", "CSV output path for correlated position, pathloss and PHY reception measurements; empty disables the trace", radioLinkTraceFilePath);
 
-    cmd.AddValue("sliceMetricsFile", "CSV output path for per-slice window metrics; empty disables collection", sliceMetricsFilePath);
+    cmd.AddValue("tcpTransportTraceFile", "CSV output path for TCP congestion-window and transport-state events; empty disables the trace", tcpTransportTraceFilePath);
+
+    cmd.AddValue("sliceMetricsFile", "CSV output path for per-slice downlink window metrics; empty disables collection", sliceMetricsFilePath);
 
     cmd.AddValue("sliceMetricsInterval", "Duration of each slice metric observation window in seconds", sliceMetricsInterval);
-
-    cmd.AddValue("trafficStartTime", "Time at which downlink traffic sources start, in seconds", trafficStartTime);
 
     cmd.Parse(argc, argv);
 
@@ -155,6 +160,36 @@ int main(int argc, char* argv[])
     const NestScenarioConfig scenarioConfig = LoadNestScenarioConfig(configFilePath, enableRanSlicing);
 
     NS_ABORT_MSG_IF(!mimoTraceFilePath.empty() && !scenarioConfig.mimo.enabled, "MIMO feedback trace requires mimo.enabled=true");
+
+    const bool hasTcpTraffic =
+        std::any_of(
+            scenarioConfig.trafficProfiles.begin(),
+            scenarioConfig.trafficProfiles.end(),
+            [](const auto& entry)
+            {
+                return entry.second.protocol ==
+                       NestTrafficProtocol::TCP;
+            });
+
+    NS_ABORT_MSG_IF(
+        !tcpTransportTraceFilePath.empty() && !hasTcpTraffic,
+        "TCP transport trace requires at least one TCP traffic profile");
+
+    if (!tcpTransportTraceFilePath.empty())
+    {
+        tcpTransportTraceStream.open(
+            tcpTransportTraceFilePath,
+            std::ios::out | std::ios::trunc);
+
+        NS_ABORT_MSG_UNLESS(
+            tcpTransportTraceStream.is_open(),
+            "Could not open TCP transport trace file: "
+                << tcpTransportTraceFilePath);
+
+        tcpTransportTraceStream
+            << "time_s,ue_index,direction,node_id,"
+            << "event,old_value,new_value,unit\n";
+    }
 
     RngSeedManager::SetSeed(scenarioConfig.rngSeed);
     RngSeedManager::SetRun(scenarioConfig.rngRun);
@@ -206,71 +241,162 @@ int main(int argc, char* argv[])
 
     if (e2TermPortOverride != 0)
     {
-        NS_ABORT_MSG_IF(e2TermPortOverride > std::numeric_limits<uint16_t>::max(), "--e2TermPort must be in the range 1..65535");
+        NS_ABORT_MSG_IF(
+            e2TermPortOverride > std::numeric_limits<uint16_t>::max(),
+            "--e2TermPort must be in the range 1..65535");
 
-        e2Config.termPort = static_cast<uint16_t>(e2TermPortOverride);
+        e2Config.termPort =
+            static_cast<uint16_t>(e2TermPortOverride);
     }
 
     if (e2LocalPortBaseOverride != 0)
     {
-        NS_ABORT_MSG_IF(e2LocalPortBaseOverride > std::numeric_limits<uint16_t>::max(), "--e2LocalPortBase must be in the range 1..65535");
+        NS_ABORT_MSG_IF(
+            e2LocalPortBaseOverride >
+                std::numeric_limits<uint16_t>::max(),
+            "--e2LocalPortBase must be in the range 1..65535");
 
-        e2Config.localPortBase = static_cast<uint16_t>(e2LocalPortBaseOverride);
+        e2Config.localPortBase =
+            static_cast<uint16_t>(e2LocalPortBaseOverride);
     }
 
     if (!e2RealtimeOverride.empty())
     {
-        e2Config.realtime = ParseBooleanCommandLineOverride(e2RealtimeOverride, "--e2Realtime");
+        e2Config.realtime =
+            ParseBooleanCommandLineOverride(
+                e2RealtimeOverride,
+                "--e2Realtime");
     }
 
-    ValidateNestE2Config(e2Config, scenarioConfig.gNbNum);
+    ValidateNestE2Config(
+        e2Config,
+        scenarioConfig.gNbNum);
 
-    NS_ABORT_MSG_UNLESS(scenarioConfig.controlMode != NestControlMode::E2 || e2Config.enabled, "controlMode=e2 requires E2 to be enabled after command-line overrides");
+    NS_ABORT_MSG_UNLESS(
+        scenarioConfig.controlMode != NestControlMode::E2 ||
+            e2Config.enabled,
+        "controlMode=e2 requires E2 to be enabled after command-line overrides");
 
-    const std::string controlModeName = NestControlModeToString(scenarioConfig.controlMode);
-    std::cout << "Selected control mode: " << controlModeName << std::endl;
-    std::cout << "RIC Control RAN Function 300: " << (scenarioConfig.controlMode == NestControlMode::E2 ? "enabled" : "disabled") << std::endl;
+    const std::string controlModeName =
+        NestControlModeToString(scenarioConfig.controlMode);
+
+    std::cout
+        << "Selected control mode: "
+        << controlModeName
+        << std::endl;
+
+    std::cout
+        << "RIC Control RAN Function 300: "
+        << (scenarioConfig.controlMode == NestControlMode::E2
+                ? "enabled"
+                : "disabled")
+        << std::endl;
 
     // Create immutable local aliases for the validated scenario parameters.
     // Vector and map aliases use references to avoid unnecessary copies.
-    const uint16_t gNbNum = scenarioConfig.gNbNum;
+    const uint16_t gNbNum =
+        scenarioConfig.gNbNum;
 
-    const uint32_t ueNum = scenarioConfig.ueNum;
+    const uint32_t ueNum =
+        scenarioConfig.ueNum;
 
-    const double simTime = scenarioConfig.simTime;
+    const double simTime =
+        scenarioConfig.simTime;
 
-    const std::vector<NestPosition3d>& gNbPositions = scenarioConfig.gNbPositions;
-    const NestUePositionAreaConfig& uePositionArea = scenarioConfig.uePositionArea;
+    const std::vector<NestPosition3d>& gNbPositions =
+        scenarioConfig.gNbPositions;
 
-    const double centralFrequency = scenarioConfig.centralFrequency;
+    const NestUePositionAreaConfig& uePositionArea =
+        scenarioConfig.uePositionArea;
 
-    const double bandwidth = scenarioConfig.bandwidth;
+    const double centralFrequency =
+        scenarioConfig.centralFrequency;
 
-    const uint16_t numerology = scenarioConfig.numerology;
+    const double bandwidth =
+        scenarioConfig.bandwidth;
 
-    const double txPower = scenarioConfig.txPower;
+    const uint16_t numerology =
+        scenarioConfig.numerology;
 
-    const double ueTxPower = scenarioConfig.ueTxPower;
+    const double txPower =
+        scenarioConfig.txPower;
 
-    const std::vector<int>& uesPerSlice = scenarioConfig.uesPerSlice;
+    const double ueTxPower =
+        scenarioConfig.ueTxPower;
 
-    const std::vector<uint8_t>& sstPerSlice = scenarioConfig.sstPerSlice;
+    const std::vector<int>& uesPerSlice =
+        scenarioConfig.uesPerSlice;
 
-    const std::vector<std::string>& trafficTypes = scenarioConfig.trafficTypes;
+    const std::vector<uint8_t>& sstPerSlice =
+        scenarioConfig.sstPerSlice;
 
-    const std::map<std::string, NestTrafficProfile>& trafficProfiles = scenarioConfig.trafficProfiles;
+    const std::vector<std::string>& trafficTypes =
+        scenarioConfig.trafficTypes;
+
+    const std::map<std::string, NestTrafficProfile>& trafficProfiles =
+        scenarioConfig.trafficProfiles;
+
+    double trafficStartTime = simTime;
+
+    for (const auto& [trafficName, profile] : trafficProfiles)
+    {
+        trafficStartTime =
+            std::min(
+                trafficStartTime,
+                profile.startTimeSeconds);
+
+        std::cout
+            << "Traffic profile " << trafficName
+            << ": protocol="
+            << NestTrafficProtocolToString(profile.protocol)
+            << " direction="
+            << NestTrafficDirectionToString(profile.direction)
+            << " rate=" << profile.dataRateMbps << " Mbps"
+            << " packetSize=" << profile.packetSize << " bytes"
+            << " window=[" << profile.startTimeSeconds
+            << ", " << profile.stopTimeSeconds << "] s"
+            << " on="
+            << NestTrafficDistributionToString(
+                   profile.onTime.distribution)
+            << "(" << profile.onTime.parameterSeconds << " s)"
+            << " off="
+            << NestTrafficDistributionToString(
+                   profile.offTime.distribution)
+            << "(" << profile.offTime.parameterSeconds << " s)"
+            << std::endl;
+    }
 
     const std::vector<LocalPrbQuotaAction>& localPrbQuotaActions = scenarioConfig.localPrbQuotaActions;
 
     // Validate event ordering and guarantee enough simulated time for metric
     // collection and, when enabled, at least one controller decision.
-    NS_ABORT_MSG_UNLESS(trafficStartTime > 1.0 && trafficStartTime < simTime, "trafficStartTime must be after slice mapping at 1.0 s and before the end of the simulation");
+    NS_ABORT_MSG_UNLESS(
+        trafficStartTime < simTime,
+        "At least one traffic profile must start before the end of the simulation");
 
     NS_ABORT_MSG_UNLESS(sliceMetricsInterval > 0.0, "sliceMetricsInterval must be greater than zero");
 
     NS_ABORT_MSG_IF(!mobilityTraceFilePath.empty() && (!std::isfinite(mobilityTraceInterval) || mobilityTraceInterval <= 0.0), "mobilityTraceInterval must be finite and greater than zero");
 
     const bool sliceMetricsRequired = !sliceMetricsFilePath.empty() || scenarioConfig.localSliceController.has_value();
+
+    // The current closed-loop controller observes downlink FlowMonitor
+    // counters. Reject uplink-only slices instead of silently feeding the
+    // controller zero-valued measurements for those slices.
+    if (scenarioConfig.localSliceController.has_value())
+    {
+        for (const std::string& trafficType : trafficTypes)
+        {
+            const NestTrafficProfile& profile =
+                trafficProfiles.at(trafficType);
+
+            NS_ABORT_MSG_IF(
+                profile.direction == NestTrafficDirection::UPLINK,
+                "controlMode=local-controller requires every slice traffic "
+                "profile to include downlink traffic; profile '"
+                    << trafficType << "' is uplink-only");
+        }
+    }
 
     if (sliceMetricsRequired)
     {
@@ -698,12 +824,8 @@ int main(int argc, char* argv[])
     Ipv4InterfaceContainer ueIpIfaces = epcHelper->AssignUeIpv4Address(ueDevs);
     // Em muitas versões: Ipv4InterfaceContainer ueIpIfaces = epcHelper->AssignUeIpv4Address(ueDevs);
 
-    // Map IP -> UE index for FlowMonitor classification
+    // Map each EPC-assigned UE address to its scenario index.
     std::map<Ipv4Address, uint32_t> ueIpToIndex;
-
-    // Rede dos UEs usada para classificação (DL/UL) e estatísticas periódicas
-    Ipv4Address ueNetworkAddress("7.0.0.0");
-    Ipv4Mask ueNetworkMask("255.0.0.0");
 
     NS_LOG_INFO("*** EPC-assigned addresses ***");
     NS_LOG_INFO("remoteHost (server): " << remoteHostAddr);
@@ -730,130 +852,383 @@ int main(int argc, char* argv[])
         NS_LOG_INFO("UE[" << i << "] default route: GW=" << epcHelper->GetUeDefaultGatewayAddress() << " via interface 1");
     }
 
-    // Applications: UDP sinks on UEs and OnOff sources on remoteHost (downlink)
-    uint16_t portBase = 8080;
+    // Application data uses one deterministic port range per direction.
+    const uint16_t downlinkPortBase = 8080;
 
-    // Enable dedicated downlink bearers (remoteHost -> UEs)
-    for (uint32_t i = 0; i < ueDevs.GetN(); ++i)
+    NS_ABORT_MSG_IF(
+        ueNum > (65535U - downlinkPortBase) / 2U,
+        "The UE count exceeds the available application port ranges");
+
+    const uint16_t uplinkPortBase =
+        static_cast<uint16_t>(downlinkPortBase + ueNum);
+
+    // These maps identify configured application-data flows and exclude
+    // reverse TCP acknowledgement flows from application statistics.
+    std::map<uint16_t, uint32_t> downlinkPortToUe;
+    std::map<uint16_t, uint32_t> uplinkPortToUe;
+
+    const auto hasDownlink =
+        [](NestTrafficDirection direction)
     {
-        Ptr<NetDevice> ueDevice = ueDevs.Get(i);
+        return direction == NestTrafficDirection::DOWNLINK ||
+               direction == NestTrafficDirection::BIDIRECTIONAL;
+    };
 
-        // Use a non-GBR low-latency bearer (as in other Nori examples)
-        NrEpsBearer bearer(NrEpsBearer::NGBR_LOW_LAT_EMBB);
-
-        Ptr<NrEpcTft> tft = Create<NrEpcTft>();
-
-        // Downlink filter: localPort = UDP port where the UE sink listens
-        uint16_t uePort = portBase + i;
-        NrEpcTft::PacketFilter dlpf;
-        dlpf.localPortStart = uePort;
-        dlpf.localPortEnd = uePort;
-        tft->Add(dlpf);
-
-        nrHelper->ActivateDedicatedEpsBearer(ueDevice, bearer, tft);
-
-        NS_LOG_INFO("Dedicated DL bearer activated for UE[" << i << "] port " << uePort);
-    }
-
-    // Install one UDP sink per UE; sinks start before traffic sources
-    for (uint32_t i = 0; i < ueNum; ++i)
+    const auto hasUplink =
+        [](NestTrafficDirection direction)
     {
-        uint16_t port = portBase + i;
-        PacketSinkHelper sink("ns3::UdpSocketFactory", InetSocketAddress(Ipv4Address::GetAny(), port));
-        ApplicationContainer sinkApps = sink.Install(ueNodes.Get(i));
-        sinkApps.Start(Seconds(0.0));
-        sinkApps.Stop(Seconds(simTime));
-        NS_LOG_INFO("Sink installed on port " << port << " at UE[" << i << "]");
-    }
+        return direction == NestTrafficDirection::UPLINK ||
+               direction == NestTrafficDirection::BIDIRECTIONAL;
+    };
 
-    // Application logic per slice
+    const auto buildDurationRandomVariable =
+        [](const NestTrafficDurationConfig& duration)
+    {
+        if (duration.distribution ==
+            NestTrafficDistribution::CONSTANT)
+        {
+            return std::string(
+                       "ns3::ConstantRandomVariable[Constant=") +
+                   std::to_string(duration.parameterSeconds) +
+                   "]";
+        }
+
+        return std::string(
+                   "ns3::ExponentialRandomVariable[Mean=") +
+               std::to_string(duration.parameterSeconds) +
+               "]";
+    };
+
+    const auto configureSource =
+        [&buildDurationRandomVariable](
+            OnOffHelper& source,
+            const NestTrafficProfile& profile)
+    {
+        source.SetAttribute(
+            "DataRate",
+            DataRateValue(
+                DataRate(
+                    static_cast<uint64_t>(
+                        profile.dataRateMbps * 1e6))));
+
+        source.SetAttribute(
+            "PacketSize",
+            UintegerValue(profile.packetSize));
+
+        source.SetAttribute(
+            "OnTime",
+            StringValue(
+                buildDurationRandomVariable(profile.onTime)));
+
+        source.SetAttribute(
+            "OffTime",
+            StringValue(
+                buildDurationRandomVariable(profile.offTime)));
+    };
+
+    // Install applications and one direction-aware TFT per UE.
     uint32_t currentUeIndex = 0;
 
-    for (size_t sliceId = 0; sliceId < uesPerSlice.size(); ++sliceId)
+    for (size_t sliceId = 0;
+         sliceId < uesPerSlice.size();
+         ++sliceId)
     {
-        int countUes = uesPerSlice[sliceId];
+        const int countUes = uesPerSlice[sliceId];
+        const std::string& trafficType =
+            trafficTypes.at(sliceId);
 
-        // Traffic type per slice from configuration (fallback to first available profile)
-        std::string trafficType = (sliceId < trafficTypes.size())
-            ? trafficTypes[sliceId]
-            : trafficProfiles.begin()->first;
+        const NestTrafficProfile& profile =
+            trafficProfiles.at(trafficType);
 
-        NS_LOG_INFO("Slice " << sliceId << " configured with traffic type: " << trafficType);
+        const std::string socketFactory =
+            profile.protocol == NestTrafficProtocol::UDP
+                ? "ns3::UdpSocketFactory"
+                : "ns3::TcpSocketFactory";
 
-        for (int k = 0; k < countUes; ++k)
+        NS_LOG_INFO(
+            "Slice " << sliceId
+            << " configured with traffic type: "
+            << trafficType);
+
+        for (int sliceUeIndex = 0;
+             sliceUeIndex < countUes;
+             ++sliceUeIndex)
         {
-            if (currentUeIndex >= ueNodes.GetN()) break;
+            NS_ABORT_MSG_IF(
+                currentUeIndex >= ueNodes.GetN(),
+                "Slice UE mapping exceeds the installed UE count");
 
-            uint32_t nodeIdx = currentUeIndex++;
-            uint16_t port = portBase + nodeIdx;
+            const uint32_t nodeIdx =
+                currentUeIndex++;
 
-            // Fallback to first available profile if traffic type is not configured
-            std::string resolvedTrafficType = trafficType;
-            if (trafficProfiles.find(resolvedTrafficType) == trafficProfiles.end()) {
-                NS_LOG_WARN("Traffic type '" << resolvedTrafficType << "' not configured. Falling back to "
-                            << trafficProfiles.begin()->first << ".");
-                resolvedTrafficType = trafficProfiles.begin()->first;
-            }
+            const Ipv4Address ueAddress =
+                ueIpIfaces.GetAddress(nodeIdx);
 
-            const NestTrafficProfile& profile = trafficProfiles.at(resolvedTrafficType);
+            const uint16_t downlinkPort =
+                static_cast<uint16_t>(
+                    downlinkPortBase + nodeIdx);
 
-            Ipv4Address ueAddr = ueIpIfaces.GetAddress(nodeIdx);
+            const uint16_t uplinkPort =
+                static_cast<uint16_t>(
+                    uplinkPortBase + nodeIdx);
 
-            // Store UE -> slice and traffic type for FlowMonitor analysis
-            ueSliceId[nodeIdx] = static_cast<int>(sliceId);
-            ueSliceTrafficType[nodeIdx] = resolvedTrafficType;
+            ueSliceId[nodeIdx] =
+                static_cast<int>(sliceId);
+
+            ueSliceTrafficType[nodeIdx] =
+                trafficType;
 
             if (e2Config.enabled)
             {
-                Ptr<NrUeNetDevice> ueNetDevice = DynamicCast<NrUeNetDevice>(ueDevs.Get(nodeIdx));
+                Ptr<NrUeNetDevice> ueNetDevice =
+                    DynamicCast<NrUeNetDevice>(
+                        ueDevs.Get(nodeIdx));
 
-                NS_ABORT_MSG_UNLESS(ueNetDevice, "Could not cast UE device to NrUeNetDevice");
+                NS_ABORT_MSG_UNLESS(
+                    ueNetDevice,
+                    "Could not cast UE device to NrUeNetDevice");
 
                 KpmGnbDuUeContext kpmUeContext;
 
-                // The portable xApp addresses simulated UEs by their
-                // zero-based scenario index. The mapping keeps this external
-                // identity separate from the ns-3 IMSI.
-                kpmUeContext.gnbCuUeF1apId = nodeIdx;
-                kpmUeContext.imsi = ueNetDevice->GetImsi();
-                kpmUeContext.sst = sstPerSlice.at(sliceId);
+                kpmUeContext.gnbCuUeF1apId =
+                    nodeIdx;
 
-                kpmGnbDuUeContexts.push_back(kpmUeContext);
+                kpmUeContext.imsi =
+                    ueNetDevice->GetImsi();
+
+                kpmUeContext.sst =
+                    sstPerSlice.at(sliceId);
+
+                kpmGnbDuUeContexts.push_back(
+                    kpmUeContext);
 
                 NS_LOG_INFO(
                     "[KPM V3] UE context: gNB-CU-UE-F1AP-ID="
                     << kpmUeContext.gnbCuUeF1apId
                     << ", IMSI=" << kpmUeContext.imsi
-                    << ", SST=" << static_cast<uint32_t>(kpmUeContext.sst));
+                    << ", SST="
+                    << static_cast<uint32_t>(
+                           kpmUeContext.sst));
             }
 
-            // Debug: downlink traffic remoteHost -> UE
-            NS_LOG_INFO("DEBUG DL for UE[" << nodeIdx << "] (" << ueAddr
-                        << "): port " << port << " type " << resolvedTrafficType);
+            Ptr<NrEpcTft> tft =
+                Create<NrEpcTft>();
 
-            OnOffHelper trafficApp("ns3::UdpSocketFactory", InetSocketAddress(ueAddr, port));
-            trafficApp.SetAttribute("DataRate", DataRateValue(DataRate(static_cast<uint64_t>(profile.dataRateMbps * 1e6))));
-            trafficApp.SetAttribute("PacketSize", UintegerValue(profile.packetSize));
+            if (hasDownlink(profile.direction))
+            {
+                NrEpcTft::PacketFilter downlinkFilter;
 
-            std::string onTimeStr ="ns3::ExponentialRandomVariable[Mean=" + std::to_string(profile.onTimeSeconds) +"]";
-            std::string offTimeStr ="ns3::ExponentialRandomVariable[Mean=" + std::to_string(profile.offTimeSeconds) +"]";
+                downlinkFilter.direction =
+                    NrEpcTft::DOWNLINK;
 
-            trafficApp.SetAttribute("OnTime", StringValue(onTimeStr));
-            trafficApp.SetAttribute("OffTime", StringValue(offTimeStr));
+                downlinkFilter.localPortStart =
+                    downlinkPort;
 
-            ApplicationContainer sourceApps = trafficApp.Install(remoteHostContainer.Get(0));
+                downlinkFilter.localPortEnd =
+                    downlinkPort;
 
-            sourceApps.Start(Seconds(trafficStartTime));
-            sourceApps.Stop(Seconds(simTime));
+                tft->Add(downlinkFilter);
 
-            NS_LOG_INFO("UE[" << nodeIdx
-                              << "] app installed and scheduled: start="
-                              << trafficStartTime
-                              << "s, stop="
-                              << simTime
-                              << "s");
+                downlinkPortToUe.emplace(
+                    downlinkPort,
+                    nodeIdx);
+
+                PacketSinkHelper downlinkSink(
+                    socketFactory,
+                    InetSocketAddress(
+                        Ipv4Address::GetAny(),
+                        downlinkPort));
+
+                ApplicationContainer sinkApps =
+                    downlinkSink.Install(
+                        ueNodes.Get(nodeIdx));
+
+                sinkApps.Start(Seconds(0.0));
+                sinkApps.Stop(Seconds(simTime));
+
+                OnOffHelper downlinkSource(
+                    socketFactory,
+                    InetSocketAddress(
+                        ueAddress,
+                        downlinkPort));
+
+                configureSource(
+                    downlinkSource,
+                    profile);
+
+                ApplicationContainer sourceApps =
+                    downlinkSource.Install(
+                        remoteHostContainer.Get(0));
+
+                sourceApps.Start(
+                    Seconds(profile.startTimeSeconds));
+
+                sourceApps.Stop(
+                    Seconds(profile.stopTimeSeconds));
+
+                if (!tcpTransportTraceFilePath.empty() &&
+                    profile.protocol == NestTrafficProtocol::TCP)
+                {
+                    Ptr<OnOffApplication> tcpApplication =
+                        DynamicCast<OnOffApplication>(
+                            sourceApps.Get(0));
+
+                    NS_ABORT_MSG_UNLESS(
+                        tcpApplication,
+                        "Could not retrieve the downlink TCP source application");
+
+                    auto tcpTrace =
+                        std::make_unique<NestTcpTransportTrace>(
+                            &tcpTransportTraceStream,
+                            nodeIdx,
+                            "downlink",
+                            remoteHostContainer.Get(0)->GetId());
+
+                    Simulator::Schedule(
+                        Seconds(profile.startTimeSeconds) +
+                            NanoSeconds(1),
+                        &NestTcpTransportTrace::Connect,
+                        tcpTrace.get(),
+                        tcpApplication);
+
+                    tcpTransportTraces.push_back(
+                        std::move(tcpTrace));
+                }
+
+                NS_LOG_INFO(
+                    "UE[" << nodeIdx
+                    << "] downlink "
+                    << NestTrafficProtocolToString(
+                           profile.protocol)
+                    << " source scheduled: port="
+                    << downlinkPort
+                    << " start="
+                    << profile.startTimeSeconds
+                    << "s stop="
+                    << profile.stopTimeSeconds
+                    << "s");
+            }
+
+            if (hasUplink(profile.direction))
+            {
+                NrEpcTft::PacketFilter uplinkFilter;
+
+                uplinkFilter.direction =
+                    NrEpcTft::UPLINK;
+
+                uplinkFilter.remotePortStart =
+                    uplinkPort;
+
+                uplinkFilter.remotePortEnd =
+                    uplinkPort;
+
+                tft->Add(uplinkFilter);
+
+                uplinkPortToUe.emplace(
+                    uplinkPort,
+                    nodeIdx);
+
+                PacketSinkHelper uplinkSink(
+                    socketFactory,
+                    InetSocketAddress(
+                        Ipv4Address::GetAny(),
+                        uplinkPort));
+
+                ApplicationContainer sinkApps =
+                    uplinkSink.Install(
+                        remoteHostContainer.Get(0));
+
+                sinkApps.Start(Seconds(0.0));
+                sinkApps.Stop(Seconds(simTime));
+
+                OnOffHelper uplinkSource(
+                    socketFactory,
+                    InetSocketAddress(
+                        remoteHostAddr,
+                        uplinkPort));
+
+                configureSource(
+                    uplinkSource,
+                    profile);
+
+                ApplicationContainer sourceApps =
+                    uplinkSource.Install(
+                        ueNodes.Get(nodeIdx));
+
+                sourceApps.Start(
+                    Seconds(profile.startTimeSeconds));
+
+                sourceApps.Stop(
+                    Seconds(profile.stopTimeSeconds));
+
+                if (!tcpTransportTraceFilePath.empty() &&
+                    profile.protocol == NestTrafficProtocol::TCP)
+                {
+                    Ptr<OnOffApplication> tcpApplication =
+                        DynamicCast<OnOffApplication>(
+                            sourceApps.Get(0));
+
+                    NS_ABORT_MSG_UNLESS(
+                        tcpApplication,
+                        "Could not retrieve the uplink TCP source application");
+
+                    auto tcpTrace =
+                        std::make_unique<NestTcpTransportTrace>(
+                            &tcpTransportTraceStream,
+                            nodeIdx,
+                            "uplink",
+                            ueNodes.Get(nodeIdx)->GetId());
+
+                    Simulator::Schedule(
+                        Seconds(profile.startTimeSeconds) +
+                            NanoSeconds(1),
+                        &NestTcpTransportTrace::Connect,
+                        tcpTrace.get(),
+                        tcpApplication);
+
+                    tcpTransportTraces.push_back(
+                        std::move(tcpTrace));
+                }
+
+                NS_LOG_INFO(
+                    "UE[" << nodeIdx
+                    << "] uplink "
+                    << NestTrafficProtocolToString(
+                           profile.protocol)
+                    << " source scheduled: port="
+                    << uplinkPort
+                    << " start="
+                    << profile.startTimeSeconds
+                    << "s stop="
+                    << profile.stopTimeSeconds
+                    << "s");
+            }
+
+            // QoS selection remains intentionally unchanged until the next
+            // checkpoint dedicated to per-slice bearers and 5QI/QCI values.
+            NrEpsBearer bearer(
+                NrEpsBearer::NGBR_LOW_LAT_EMBB);
+
+            nrHelper->ActivateDedicatedEpsBearer(
+                ueDevs.Get(nodeIdx),
+                bearer,
+                tft);
+
+            NS_LOG_INFO(
+                "Dedicated bearer activated for UE["
+                << nodeIdx
+                << "] protocol="
+                << NestTrafficProtocolToString(
+                       profile.protocol)
+                << " direction="
+                << NestTrafficDirectionToString(
+                       profile.direction));
         }
     }
+
+    NS_ABORT_MSG_IF(
+        currentUeIndex != ueNum,
+        "Slice UE mapping does not cover every installed UE");
 
     if (e2Config.enabled)
     {
@@ -868,23 +1243,6 @@ int main(int argc, char* argv[])
             e2Interface->SetKpmGnbDuUeContexts(kpmGnbDuUeContexts);
         }
     }
-
-    // Simple UDP echo connectivity test
-    NS_LOG_INFO("Installing UDP Echo test...");
-    uint16_t echoPort = 9;
-    UdpEchoServerHelper echoServer(echoPort);
-    ApplicationContainer serverApps = echoServer.Install(remoteHostContainer.Get(0));
-    serverApps.Start(Seconds(0.0));
-    serverApps.Stop(Seconds(simTime));
-
-    UdpEchoClientHelper echoClient(remoteHostAddr, echoPort);
-    echoClient.SetAttribute("MaxPackets", UintegerValue(1));
-    echoClient.SetAttribute("Interval", TimeValue(Seconds(1.0)));
-    echoClient.SetAttribute("PacketSize", UintegerValue(1024));
-    ApplicationContainer clientApps = echoClient.Install(ueNodes.Get(0));
-    clientApps.Start(Seconds(6.1));
-    clientApps.Stop(Seconds(7.0));
-    NS_LOG_INFO("Echo test: UE[0] will send 1 packet to remoteHost:9 at t=6.1s");
 
     // FlowMonitor statistics
     FlowMonitorHelper flowmonHelper;
@@ -939,11 +1297,9 @@ int main(int argc, char* argv[])
             monitor,
             &flowmonHelper,
             ueIpToIndex,
+            downlinkPortToUe,
             ueSliceId,
             sstPerSlice,
-            ueNetworkAddress,
-            ueNetworkMask,
-            echoPort,
             simTime,
             sliceMetricsInterval,
             &sliceMetricsState,
@@ -965,6 +1321,12 @@ int main(int argc, char* argv[])
     // Run
     Simulator::Stop(Seconds(simTime));
     Simulator::Run();
+
+    if (tcpTransportTraceStream.is_open())
+    {
+        tcpTransportTraceStream.close();
+    }
+
     if (mimoTraceStream.is_open())
     {
         mimoTraceStream.close();
@@ -989,169 +1351,355 @@ int main(int argc, char* argv[])
 
     // Post-simulation analysis
     monitor->CheckForLostPackets();
-    Ptr<Ipv4FlowClassifier> classifier = DynamicCast<Ipv4FlowClassifier>(flowmonHelper.GetClassifier());
 
-    double totalThroughputEmbB = 0.0, totalDelayEmbB = 0.0;
-    uint32_t embbFlows = 0;
-    double totalThroughputUrllc = 0.0, totalDelayUrllc = 0.0;
-    uint32_t urllcFlows = 0;
-    uint32_t ignoredFlows = 0; // Infrastructure flows (GTP/backhaul)
+    Ptr<Ipv4FlowClassifier> classifier =
+        DynamicCast<Ipv4FlowClassifier>(
+            flowmonHelper.GetClassifier());
 
-    std::map<FlowId, FlowMonitor::FlowStats> statsMap = monitor->GetFlowStats();
+    NS_ABORT_MSG_UNLESS(
+        classifier,
+        "Could not obtain the IPv4 FlowMonitor classifier");
 
-    std::cout << "\n=== DEBUG: Total number of captured flows ===" << std::endl;
-    std::cout << "Total flows: " << statsMap.size() << std::endl;
-
-    uint64_t totalTxPackets = 0, totalRxPackets = 0;
-    for (const auto& it : statsMap)
+    struct ApplicationFlowAggregate
     {
-        FlowId flowId = it.first;
-        const FlowMonitor::FlowStats& stats = it.second;
-        Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(flowId);
-        std::cout << "  Flow " << flowId << ": " << t.sourceAddress << ":" << t.sourcePort
-                  << " -> " << t.destinationAddress << ":" << t.destinationPort
-                  << " (Tx: " << stats.txPackets << ", Rx: " << stats.rxPackets << ")" << std::endl;
+        double totalThroughputMbps{0.0};
+        double totalDelayMs{0.0};
+        uint32_t flowCount{0};
+    };
+
+    std::map<std::string, ApplicationFlowAggregate>
+        trafficAggregates;
+
+    std::map<std::string, ApplicationFlowAggregate>
+        downlinkAggregates;
+
+    std::map<std::string, ApplicationFlowAggregate>
+        uplinkAggregates;
+
+    uint32_t ignoredNonApplicationFlows = 0;
+
+    const std::map<FlowId, FlowMonitor::FlowStats> statsMap =
+        monitor->GetFlowStats();
+
+    std::cout
+        << "\n=== DEBUG: Total number of captured flows ==="
+        << std::endl;
+
+    std::cout
+        << "Total flows: "
+        << statsMap.size()
+        << std::endl;
+
+    uint64_t totalTxPackets = 0;
+    uint64_t totalRxPackets = 0;
+
+    for (const auto& [flowId, stats] : statsMap)
+    {
+        const Ipv4FlowClassifier::FiveTuple tuple =
+            classifier->FindFlow(flowId);
+
+        std::cout
+            << "  Flow " << flowId
+            << ": " << tuple.sourceAddress
+            << ":" << tuple.sourcePort
+            << " -> " << tuple.destinationAddress
+            << ":" << tuple.destinationPort
+            << " (Tx: " << stats.txPackets
+            << ", Rx: " << stats.rxPackets
+            << ")"
+            << std::endl;
+
         totalTxPackets += stats.txPackets;
         totalRxPackets += stats.rxPackets;
     }
-    std::cout << "Total Tx: " << totalTxPackets << " | Total Rx: " << totalRxPackets << std::endl;
 
-    std::cout << "\n=== DIAGNOSTICS ===" << std::endl;
-    std::cout << "If Total Tx = 0: OnOff apps did NOT send any packets" << std::endl;
-    std::cout << "If Total Tx > 0 but Total Rx = 0: All packets were lost in the network" << std::endl;
-    std::cout << "If Total Rx > 0: Flows are successfully traversing the network" << std::endl;
+    std::cout
+        << "Total Tx: " << totalTxPackets
+        << " | Total Rx: " << totalRxPackets
+        << std::endl;
 
-    std::cout << "\n=== FLOW DETAILS ===" << std::endl;
+    std::cout
+        << "\n=== FLOW DETAILS ==="
+        << std::endl;
 
-    for (const auto& it : statsMap)
+    for (const auto& [flowId, stats] : statsMap)
     {
-        FlowId flowId = it.first;
-        const FlowMonitor::FlowStats& stats = it.second;
-        Ipv4FlowClassifier::FiveTuple t = classifier->FindFlow(flowId);
+        const Ipv4FlowClassifier::FiveTuple tuple =
+            classifier->FindFlow(flowId);
 
-        // Check whether the flow is associated with a UE (uplink or downlink)
-        bool ueAsSource = ueNetworkMask.IsMatch(t.sourceAddress, ueNetworkAddress);
-        bool ueAsDest = ueNetworkMask.IsMatch(t.destinationAddress, ueNetworkAddress);
+        int ueIndex = -1;
+        std::string direction;
 
-        if (ueAsSource || ueAsDest)
+        const auto downlinkPortIt =
+            downlinkPortToUe.find(
+                tuple.destinationPort);
+
+        if (downlinkPortIt != downlinkPortToUe.end())
         {
-            double throughput = 0.0;
-            double delay = 0.0;
-            double lossRatio = 100.0;
+            const auto ueAddressIt =
+                ueIpToIndex.find(
+                    tuple.destinationAddress);
 
-            if (stats.rxPackets > 0)
+            if (
+                ueAddressIt != ueIpToIndex.end() &&
+                ueAddressIt->second == downlinkPortIt->second
+            )
             {
-                double txDuration = stats.timeLastRxPacket.GetSeconds() - stats.timeFirstTxPacket.GetSeconds();
-                if (txDuration <= 0.0) txDuration = 1e-9;
+                ueIndex =
+                    static_cast<int>(
+                        ueAddressIt->second);
 
-                throughput = (stats.rxBytes * 8.0) / txDuration / 1e6; // Mbps
-                delay = (stats.delaySum.GetSeconds() / stats.rxPackets) * 1e3; // ms
-                lossRatio = (stats.txPackets > 0) ? ((double)(stats.txPackets - stats.rxPackets) / stats.txPackets) * 100.0 : 0.0;
+                direction = "downlink";
             }
-
-            // Identify echo-test flow (port 9 at either end)
-            bool isEchoFlow = (t.sourcePort == echoPort || t.destinationPort == echoPort);
-
-            // Find the UE IP in this flow
-            Ipv4Address ueAddr;
-            if (ueAsSource && !ueAsDest)
-            {
-                ueAddr = t.sourceAddress;
-            }
-            else if (ueAsDest && !ueAsSource)
-            {
-                ueAddr = t.destinationAddress;
-            }
-            else
-            {
-                // Rare case: both endpoints in UE network (UE-UE)
-                ueAddr = t.sourceAddress;
-            }
-
-            int ueIndex = -1;
-            auto itIdx = ueIpToIndex.find(ueAddr);
-            if (itIdx != ueIpToIndex.end())
-            {
-                ueIndex = static_cast<int>(itIdx->second);
-            }
-
-            int sliceId = -1;
-            std::string trafficType = "UNKNOWN";
-            if (ueIndex >= 0 && ueIndex < static_cast<int>(ueSliceId.size()))
-            {
-                sliceId = ueSliceId[ueIndex];
-            }
-            if (ueIndex >= 0 && ueIndex < static_cast<int>(ueSliceTrafficType.size()) &&
-                !ueSliceTrafficType[ueIndex].empty())
-            {
-                trafficType = ueSliceTrafficType[ueIndex];
-            }
-
-            if (isEchoFlow)
-            {
-                // Connectivity test flow: exclude from eMBB/URLLC statistics
-                std::cout << "Flow " << flowId << " (ECHO TEST): UE " << ueAddr
-                          << " | T-put: " << std::fixed << std::setprecision(2) << throughput << " Mbps"
-                          << " | Delay: " << delay << " ms"
-                          << " | Loss: " << lossRatio << " %" << std::endl;
-                continue;
-            }
-
-            // Update aggregate statistics according to slice traffic type
-            if (trafficType == "eMBB" || trafficType == "EMBB" || trafficType == "embb")
-            {
-                totalThroughputEmbB += throughput;
-                totalDelayEmbB += delay;
-                embbFlows++;
-            }
-            else if (trafficType == "URLLC" || trafficType == "urllc")
-            {
-                totalThroughputUrllc += throughput;
-                totalDelayUrllc += delay;
-                urllcFlows++;
-            }
-
-            std::cout << "Flow " << flowId << " (" << trafficType
-                      << ", slice " << ((sliceId >= 0) ? std::to_string(sliceId) : std::string("N/A"))
-                      << "): " << t.sourceAddress << ":" << t.sourcePort
-                      << " -> " << t.destinationAddress << ":" << t.destinationPort
-                      << " | T-put: " << std::fixed << std::setprecision(2) << throughput << " Mbps"
-                      << " | Delay: " << delay << " ms"
-                      << " | Loss: " << lossRatio << " %" << std::endl;
         }
-        else
+
+        if (ueIndex < 0)
         {
-            // Infrastructure flow (e.g., GTP/backhaul), ignored in UE statistics
-            ignoredFlows++;
-            std::cout << "  (Ignored infrastructure flow: " << t.sourceAddress << ":" << t.sourcePort
-                      << " -> " << t.destinationAddress << ":" << t.destinationPort
-                      << ") Tx: " << stats.txPackets << " Rx: " << stats.rxPackets << std::endl;
+            const auto uplinkPortIt =
+                uplinkPortToUe.find(
+                    tuple.destinationPort);
+
+            if (uplinkPortIt != uplinkPortToUe.end())
+            {
+                const auto ueAddressIt =
+                    ueIpToIndex.find(
+                        tuple.sourceAddress);
+
+                if (
+                    ueAddressIt != ueIpToIndex.end() &&
+                    ueAddressIt->second == uplinkPortIt->second
+                )
+                {
+                    ueIndex =
+                        static_cast<int>(
+                            ueAddressIt->second);
+
+                    direction = "uplink";
+                }
+            }
         }
+
+        // This excludes infrastructure traffic, auxiliary traffic and
+        // reverse TCP acknowledgement flows from application statistics.
+        if (ueIndex < 0)
+        {
+            ignoredNonApplicationFlows++;
+
+            std::cout
+                << "  (Ignored non-application flow: "
+                << tuple.sourceAddress
+                << ":" << tuple.sourcePort
+                << " -> "
+                << tuple.destinationAddress
+                << ":" << tuple.destinationPort
+                << ") Tx: " << stats.txPackets
+                << " Rx: " << stats.rxPackets
+                << std::endl;
+
+            continue;
+        }
+
+        NS_ABORT_MSG_IF(
+            static_cast<uint32_t>(ueIndex) >= ueSliceId.size() ||
+                static_cast<uint32_t>(ueIndex) >=
+                    ueSliceTrafficType.size(),
+            "Application flow UE index is outside the slice mapping");
+
+        const int sliceId =
+            ueSliceId.at(ueIndex);
+
+        const std::string& trafficType =
+            ueSliceTrafficType.at(ueIndex);
+
+        NS_ABORT_MSG_IF(
+            trafficType.empty(),
+            "Application flow UE has no configured traffic type");
+
+        const NestTrafficProfile& profile =
+            trafficProfiles.at(trafficType);
+
+        double throughputMbps = 0.0;
+        double delayMs = 0.0;
+        double lossRatio = 100.0;
+
+        if (stats.rxPackets > 0)
+        {
+            double receptionDuration =
+                stats.timeLastRxPacket.GetSeconds() -
+                stats.timeFirstTxPacket.GetSeconds();
+
+            if (receptionDuration <= 0.0)
+            {
+                receptionDuration = 1e-9;
+            }
+
+            throughputMbps =
+                stats.rxBytes * 8.0 /
+                receptionDuration /
+                1e6;
+
+            delayMs =
+                stats.delaySum.GetSeconds() /
+                stats.rxPackets *
+                1e3;
+        }
+
+        if (stats.txPackets > 0)
+        {
+            lossRatio =
+                static_cast<double>(
+                    stats.txPackets - stats.rxPackets) /
+                stats.txPackets *
+                100.0;
+        }
+
+        ApplicationFlowAggregate& trafficAggregate =
+            trafficAggregates[trafficType];
+
+        trafficAggregate.totalThroughputMbps +=
+            throughputMbps;
+
+        trafficAggregate.totalDelayMs +=
+            delayMs;
+
+        trafficAggregate.flowCount++;
+
+        ApplicationFlowAggregate& directionAggregate =
+            direction == "downlink"
+                ? downlinkAggregates[trafficType]
+                : uplinkAggregates[trafficType];
+
+        directionAggregate.totalThroughputMbps +=
+            throughputMbps;
+
+        directionAggregate.totalDelayMs +=
+            delayMs;
+
+        directionAggregate.flowCount++;
+
+        std::cout
+            << "Flow " << flowId
+            << " (" << trafficType
+            << ", slice "
+            << (
+                sliceId >= 0
+                    ? std::to_string(sliceId)
+                    : std::string("N/A")
+            )
+            << ", " << direction
+            << ", "
+            << NestTrafficProtocolToString(
+                   profile.protocol)
+            << "): "
+            << tuple.sourceAddress
+            << ":" << tuple.sourcePort
+            << " -> "
+            << tuple.destinationAddress
+            << ":" << tuple.destinationPort
+            << " | T-put: "
+            << std::fixed
+            << std::setprecision(2)
+            << throughputMbps
+            << " Mbps"
+            << " | Delay: "
+            << delayMs
+            << " ms"
+            << " | Loss: "
+            << lossRatio
+            << " %"
+            << std::endl;
     }
 
-    std::cout << "\n=== SUMMARY ===" << std::endl;
-    std::cout << "Ignored infrastructure flows (GTP/Backhaul): " << ignoredFlows << std::endl;
+    std::cout
+        << "\n=== SUMMARY ==="
+        << std::endl;
 
-    if (embbFlows > 0)
-    {
-        std::cout << "Average eMBB (" << embbFlows << " flows) - Throughput: "
-              << (totalThroughputEmbB / embbFlows) << " Mbps; Delay: "
-              << (totalDelayEmbB / embbFlows) << " ms" << std::endl;
-    }
-    else
-    {
-        std::cout << "No eMBB flow detected (check if app start time > RRC connection time)." << std::endl;
-    }
+    std::cout
+        << "Ignored non-application flows: "
+        << ignoredNonApplicationFlows
+        << std::endl;
 
-    if (urllcFlows > 0)
+    const auto printAggregate =
+        [](
+            const std::string& label,
+            const ApplicationFlowAggregate& aggregate)
     {
-        std::cout << "Average URLLC (" << urllcFlows << " flows) - Throughput: "
-              << (totalThroughputUrllc / urllcFlows) << " Mbps; Delay: "
-              << (totalDelayUrllc / urllcFlows) << " ms" << std::endl;
-    }
-    else
+        std::cout
+            << "Average " << label
+            << " (" << aggregate.flowCount
+            << " flows) - Throughput: "
+            << aggregate.totalThroughputMbps /
+                aggregate.flowCount
+            << " Mbps; Delay: "
+            << aggregate.totalDelayMs /
+                aggregate.flowCount
+            << " ms"
+            << std::endl;
+    };
+
+    std::vector<std::string> summarizedTrafficTypes;
+
+    for (const std::string& trafficType : trafficTypes)
     {
-         std::cout << "No URLLC flow detected." << std::endl;
+        if (
+            std::find(
+                summarizedTrafficTypes.begin(),
+                summarizedTrafficTypes.end(),
+                trafficType) !=
+            summarizedTrafficTypes.end()
+        )
+        {
+            continue;
+        }
+
+        summarizedTrafficTypes.push_back(
+            trafficType);
+
+        const auto aggregateIt =
+            trafficAggregates.find(trafficType);
+
+        if (
+            aggregateIt == trafficAggregates.end() ||
+            aggregateIt->second.flowCount == 0
+        )
+        {
+            std::cout
+                << "No " << trafficType
+                << " application-data flow detected."
+                << std::endl;
+
+            continue;
+        }
+
+        printAggregate(
+            trafficType,
+            aggregateIt->second);
+
+        const auto downlinkIt =
+            downlinkAggregates.find(trafficType);
+
+        if (
+            downlinkIt != downlinkAggregates.end() &&
+            downlinkIt->second.flowCount > 0
+        )
+        {
+            printAggregate(
+                trafficType + " downlink",
+                downlinkIt->second);
+        }
+
+        const auto uplinkIt =
+            uplinkAggregates.find(trafficType);
+
+        if (
+            uplinkIt != uplinkAggregates.end() &&
+            uplinkIt->second.flowCount > 0
+        )
+        {
+            printAggregate(
+                trafficType + " uplink",
+                uplinkIt->second);
+        }
     }
 
     Simulator::Destroy();

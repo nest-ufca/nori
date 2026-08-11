@@ -151,14 +151,80 @@ struct NestMimoConfig
 };
 
 /**
+ * Transport protocol used by one traffic profile.
+ */
+enum class NestTrafficProtocol
+{
+    UDP,
+    TCP
+};
+
+/**
+ * Return the JSON and log name of a traffic transport protocol.
+ */
+std::string NestTrafficProtocolToString(NestTrafficProtocol protocol);
+
+/**
+ * Direction of application data relative to the UE.
+ */
+enum class NestTrafficDirection
+{
+    DOWNLINK,
+    UPLINK,
+    BIDIRECTIONAL
+};
+
+/**
+ * Return the JSON and log name of a traffic direction.
+ */
+std::string NestTrafficDirectionToString(NestTrafficDirection direction);
+
+/**
+ * Supported random-variable models for ON and OFF durations.
+ */
+enum class NestTrafficDistribution
+{
+    CONSTANT,
+    EXPONENTIAL
+};
+
+/**
+ * Return the JSON and log name of a traffic-duration distribution.
+ */
+std::string NestTrafficDistributionToString(NestTrafficDistribution distribution);
+
+/**
+ * One ON or OFF duration distribution.
+ *
+ * For a constant distribution, parameterSeconds is the fixed duration. For
+ * an exponential distribution, it is the mean duration.
+ */
+struct NestTrafficDurationConfig
+{
+    NestTrafficDistribution distribution{NestTrafficDistribution::CONSTANT};
+    double parameterSeconds{0.0};
+};
+
+/**
  * Traffic generation parameters associated with one service profile.
+ *
+ * For bidirectional traffic, dataRateMbps is offered independently in the
+ * downlink and uplink directions.
  */
 struct NestTrafficProfile
 {
+    NestTrafficProtocol protocol{NestTrafficProtocol::UDP};
+    NestTrafficDirection direction{NestTrafficDirection::DOWNLINK};
     double dataRateMbps{0.0};
     uint16_t packetSize{0};
-    double onTimeSeconds{1.0};
-    double offTimeSeconds{0.01};
+    double startTimeSeconds{0.0};
+    double stopTimeSeconds{0.0};
+    NestTrafficDurationConfig onTime{
+        NestTrafficDistribution::CONSTANT,
+        1.0};
+    NestTrafficDurationConfig offTime{
+        NestTrafficDistribution::CONSTANT,
+        0.0};
 };
 
 /**

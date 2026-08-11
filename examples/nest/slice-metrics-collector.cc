@@ -38,16 +38,16 @@ CollectCurrentDlUeCounters(
     Ptr<FlowMonitor> monitor,
     FlowMonitorHelper* flowmonHelper,
     const std::map<Ipv4Address, uint32_t>& ueIpToIndex,
-    Ipv4Address ueNetworkAddress,
-    Ipv4Mask ueNetworkMask,
-    uint16_t echoPort,
+    const std::map<uint16_t, uint32_t>& downlinkPortToUe,
     uint32_t ueCount)
 {
     Ptr<Ipv4FlowClassifier> classifier =
-        DynamicCast<Ipv4FlowClassifier>(flowmonHelper->GetClassifier());
+        DynamicCast<Ipv4FlowClassifier>(
+            flowmonHelper->GetClassifier());
 
-    NS_ABORT_MSG_UNLESS(classifier,
-                        "Could not obtain the IPv4 FlowMonitor classifier");
+    NS_ABORT_MSG_UNLESS(
+        classifier,
+        "Could not obtain the IPv4 FlowMonitor classifier");
 
     const std::map<FlowId, FlowMonitor::FlowStats> statsMap =
         monitor->GetFlowStats();
@@ -59,42 +59,42 @@ CollectCurrentDlUeCounters(
         const Ipv4FlowClassifier::FiveTuple tuple =
             classifier->FindFlow(flowId);
 
-        const bool isDownlinkToUe =
-            ueNetworkMask.IsMatch(tuple.destinationAddress,
-                                ueNetworkAddress);
+        const auto portIt =
+            downlinkPortToUe.find(tuple.destinationPort);
 
-        if (!isDownlinkToUe)
+        if (portIt == downlinkPortToUe.end())
         {
             continue;
         }
 
-        if (tuple.sourcePort == echoPort ||
-            tuple.destinationPort == echoPort)
-        {
-            continue;
-        }
-
-        const auto ueIndexIt =
+        const auto addressIt =
             ueIpToIndex.find(tuple.destinationAddress);
 
-        if (ueIndexIt == ueIpToIndex.end())
+        if (addressIt == ueIpToIndex.end())
         {
             continue;
         }
 
-        const uint32_t ueIndex = ueIndexIt->second;
+        NS_ABORT_MSG_IF(
+            portIt->second != addressIt->second,
+            "Downlink application port and UE address identify different UEs");
+
+        const uint32_t ueIndex =
+            addressIt->second;
 
         NS_ABORT_MSG_IF(
             ueIndex >= counters.size(),
-            "UE index obtained from IP mapping is outside the counter vector");
+            "UE index obtained from application flow mapping is outside the counter vector");
 
-        UeFlowCounters& ueCounters = counters[ueIndex];
+        UeFlowCounters& ueCounters =
+            counters[ueIndex];
 
         ueCounters.txPackets += stats.txPackets;
         ueCounters.rxPackets += stats.rxPackets;
         ueCounters.txBytes += stats.txBytes;
         ueCounters.rxBytes += stats.rxBytes;
-        ueCounters.delaySumSeconds += stats.delaySum.GetSeconds();
+        ueCounters.delaySumSeconds +=
+            stats.delaySum.GetSeconds();
     }
 
     return counters;
@@ -211,11 +211,9 @@ SampleSliceWindowMetrics(
     Ptr<FlowMonitor> monitor,
     FlowMonitorHelper* flowmonHelper,
     const std::map<Ipv4Address, uint32_t>& ueIpToIndex,
+    const std::map<uint16_t, uint32_t>& downlinkPortToUe,
     const std::vector<int>& ueSliceId,
     const std::vector<uint8_t>& sstPerSlice,
-    Ipv4Address ueNetworkAddress,
-    Ipv4Mask ueNetworkMask,
-    uint16_t echoPort,
     double simTime,
     double interval,
     SliceMetricsCollectorState* state,
@@ -244,9 +242,7 @@ SampleSliceWindowMetrics(
             monitor,
             flowmonHelper,
             ueIpToIndex,
-            ueNetworkAddress,
-            ueNetworkMask,
-            echoPort,
+            downlinkPortToUe,
             static_cast<uint32_t>(ueSliceId.size()));
 
     const bool baselineAvailable = state->initialized;
@@ -322,11 +318,9 @@ SampleSliceWindowMetrics(
             monitor,
             flowmonHelper,
             ueIpToIndex,
+            downlinkPortToUe,
             ueSliceId,
             sstPerSlice,
-            ueNetworkAddress,
-            ueNetworkMask,
-            echoPort,
             simTime,
             interval,
             state,

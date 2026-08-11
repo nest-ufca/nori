@@ -71,9 +71,7 @@ CollectCurrentDlUeCounters(
     Ptr<FlowMonitor> monitor,
     FlowMonitorHelper* flowmonHelper,
     const std::map<Ipv4Address, uint32_t>& ueIpToIndex,
-    Ipv4Address ueNetworkAddress,
-    Ipv4Mask ueNetworkMask,
-    uint16_t echoPort,
+    const std::map<uint16_t, uint32_t>& downlinkPortToUe,
     uint32_t ueCount);
 
 std::vector<SliceWindowMetrics>
@@ -88,11 +86,9 @@ void SampleSliceWindowMetrics(
     Ptr<FlowMonitor> monitor,
     FlowMonitorHelper* flowmonHelper,
     const std::map<Ipv4Address, uint32_t>& ueIpToIndex,
+    const std::map<uint16_t, uint32_t>& downlinkPortToUe,
     const std::vector<int>& ueSliceId,
     const std::vector<uint8_t>& sstPerSlice,
-    Ipv4Address ueNetworkAddress,
-    Ipv4Mask ueNetworkMask,
-    uint16_t echoPort,
     double simTime,
     double interval,
     SliceMetricsCollectorState* state,

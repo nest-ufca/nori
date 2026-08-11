@@ -410,13 +410,97 @@ void ParseMimoConfiguration(const nlohmann::json& mimoJson, NestScenarioConfig* 
 }
 
 /**
+ * Parse one ON/OFF duration distribution.
+ */
+NestTrafficDurationConfig
+ParseTrafficDuration(const nlohmann::json& durationJson,
+                     const std::string& fieldPath,
+                     bool allowZero)
+{
+    NS_ABORT_MSG_UNLESS(
+        durationJson.is_object(),
+        fieldPath << " must be an object");
+
+    NS_ABORT_MSG_UNLESS(
+        durationJson.contains("distribution") &&
+            durationJson["distribution"].is_string(),
+        fieldPath << ".distribution must be a string");
+
+    const std::string distribution =
+        durationJson["distribution"].get<std::string>();
+
+    NestTrafficDurationConfig duration;
+
+    if (distribution == "constant")
+    {
+        NS_ABORT_MSG_UNLESS(
+            durationJson.contains("value") &&
+                durationJson["value"].is_number(),
+            fieldPath
+                << ".value must be numeric for the constant distribution");
+
+        duration.distribution =
+            NestTrafficDistribution::CONSTANT;
+
+        duration.parameterSeconds =
+            durationJson["value"].get<double>();
+    }
+    else if (distribution == "exponential")
+    {
+        NS_ABORT_MSG_UNLESS(
+            durationJson.contains("mean") &&
+                durationJson["mean"].is_number(),
+            fieldPath
+                << ".mean must be numeric for the exponential distribution");
+
+        duration.distribution =
+            NestTrafficDistribution::EXPONENTIAL;
+
+        duration.parameterSeconds =
+            durationJson["mean"].get<double>();
+    }
+    else
+    {
+        NS_ABORT_MSG(
+            fieldPath
+            << ".distribution must be one of: constant, exponential");
+    }
+
+    NS_ABORT_MSG_IF(
+        !std::isfinite(duration.parameterSeconds),
+        fieldPath << " duration must be finite");
+
+    if (allowZero)
+    {
+        NS_ABORT_MSG_IF(
+            duration.parameterSeconds < 0.0,
+            fieldPath << " duration must be non-negative");
+    }
+    else
+    {
+        NS_ABORT_MSG_IF(
+            duration.parameterSeconds <= 0.0,
+            fieldPath << " duration must be greater than zero");
+    }
+
+    return duration;
+}
+
+/**
  * Parse and validate all traffic profiles declared in the JSON document.
  */
-void ParseTrafficProfiles(const nlohmann::json& configJson, NestScenarioConfig* config)
+void
+ParseTrafficProfiles(const nlohmann::json& configJson,
+                     NestScenarioConfig* config)
 {
-    NS_ABORT_MSG_IF(config == nullptr, "Scenario configuration pointer is null");
+    NS_ABORT_MSG_IF(
+        config == nullptr,
+        "Scenario configuration pointer is null");
 
-    NS_ABORT_MSG_UNLESS(configJson.contains("traffic") && configJson["traffic"].is_object(), "The scenario must contain a traffic object");
+    NS_ABORT_MSG_UNLESS(
+        configJson.contains("traffic") &&
+            configJson["traffic"].is_object(),
+        "The scenario must contain a traffic object");
 
     for (const auto& item : configJson["traffic"].items())
     {
@@ -429,30 +513,155 @@ void ParseTrafficProfiles(const nlohmann::json& configJson, NestScenarioConfig* 
             continue;
         }
 
-        NestTrafficProfile profile;
+        const std::string fieldPrefix =
+            "traffic." + trafficName;
 
-        profile.dataRateMbps = trafficJson.value("bitrateMbps", -1.0);
+        NS_ABORT_MSG_UNLESS(
+            trafficJson.contains("protocol") &&
+                trafficJson["protocol"].is_string(),
+            fieldPrefix << ".protocol must be a string");
 
-        const int64_t packetSize = trafficJson.value("packetSize", -1);
+        NS_ABORT_MSG_UNLESS(
+            trafficJson.contains("direction") &&
+                trafficJson["direction"].is_string(),
+            fieldPrefix << ".direction must be a string");
 
-        profile.onTimeSeconds = trafficJson.value("onTimeMean", 1.0);
+        NS_ABORT_MSG_UNLESS(
+            trafficJson.contains("bitrateMbps") &&
+                trafficJson["bitrateMbps"].is_number(),
+            fieldPrefix << ".bitrateMbps must be numeric");
 
-        profile.offTimeSeconds = trafficJson.value("offTimeMean", 0.01);
+        NS_ABORT_MSG_UNLESS(
+            trafficJson.contains("packetSize") &&
+                trafficJson["packetSize"].is_number_integer(),
+            fieldPrefix << ".packetSize must be an integer");
 
-        NS_ABORT_MSG_IF(!std::isfinite(profile.dataRateMbps) || profile.dataRateMbps <= 0.0, "Traffic bitrateMbps must be finite and greater than zero");
+        NS_ABORT_MSG_UNLESS(
+            trafficJson.contains("startTime") &&
+                trafficJson["startTime"].is_number(),
+            fieldPrefix << ".startTime must be numeric");
 
-        NS_ABORT_MSG_IF(packetSize <= 0 || packetSize > std::numeric_limits<uint16_t>::max(), "Traffic packetSize must fit in an unsigned 16-bit value");
+        NS_ABORT_MSG_UNLESS(
+            trafficJson.contains("stopTime") &&
+                trafficJson["stopTime"].is_number(),
+            fieldPrefix << ".stopTime must be numeric");
 
-        NS_ABORT_MSG_IF(!std::isfinite(profile.onTimeSeconds) || profile.onTimeSeconds <= 0.0, "Traffic onTimeMean must be finite and greater than zero");
+        NS_ABORT_MSG_UNLESS(
+            trafficJson.contains("onTime"),
+            fieldPrefix << ".onTime is required");
 
-        NS_ABORT_MSG_IF(!std::isfinite(profile.offTimeSeconds) || profile.offTimeSeconds < 0.0, "Traffic offTimeMean must be finite and non-negative");
+        NS_ABORT_MSG_UNLESS(
+            trafficJson.contains("offTime"),
+            fieldPrefix << ".offTime is required");
 
-        profile.packetSize = static_cast<uint16_t>(packetSize);
+        const std::string protocol =
+            trafficJson["protocol"].get<std::string>();
 
-        config->trafficProfiles.emplace(trafficName, profile);
+        const std::string direction =
+            trafficJson["direction"].get<std::string>();
+
+        if (protocol == "udp")
+        {
+            config->trafficProfiles[trafficName].protocol =
+                NestTrafficProtocol::UDP;
+        }
+        else if (protocol == "tcp")
+        {
+            config->trafficProfiles[trafficName].protocol =
+                NestTrafficProtocol::TCP;
+        }
+        else
+        {
+            NS_ABORT_MSG(
+                fieldPrefix << ".protocol must be one of: udp, tcp");
+        }
+
+        if (direction == "downlink")
+        {
+            config->trafficProfiles[trafficName].direction =
+                NestTrafficDirection::DOWNLINK;
+        }
+        else if (direction == "uplink")
+        {
+            config->trafficProfiles[trafficName].direction =
+                NestTrafficDirection::UPLINK;
+        }
+        else if (direction == "bidirectional")
+        {
+            config->trafficProfiles[trafficName].direction =
+                NestTrafficDirection::BIDIRECTIONAL;
+        }
+        else
+        {
+            NS_ABORT_MSG(
+                fieldPrefix
+                << ".direction must be one of: downlink, uplink, bidirectional");
+        }
+
+        NestTrafficProfile& profile =
+            config->trafficProfiles[trafficName];
+
+        profile.dataRateMbps =
+            trafficJson["bitrateMbps"].get<double>();
+
+        const int64_t packetSize =
+            trafficJson["packetSize"].get<int64_t>();
+
+        profile.startTimeSeconds =
+            trafficJson["startTime"].get<double>();
+
+        profile.stopTimeSeconds =
+            trafficJson["stopTime"].get<double>();
+
+        profile.onTime =
+            ParseTrafficDuration(
+                trafficJson["onTime"],
+                fieldPrefix + ".onTime",
+                false);
+
+        profile.offTime =
+            ParseTrafficDuration(
+                trafficJson["offTime"],
+                fieldPrefix + ".offTime",
+                true);
+
+        NS_ABORT_MSG_IF(
+            !std::isfinite(profile.dataRateMbps) ||
+                profile.dataRateMbps <= 0.0,
+            fieldPrefix
+                << ".bitrateMbps must be finite and greater than zero");
+
+        NS_ABORT_MSG_IF(
+            packetSize <= 0 ||
+                packetSize >
+                    std::numeric_limits<uint16_t>::max(),
+            fieldPrefix
+                << ".packetSize must fit in an unsigned 16-bit value");
+
+        NS_ABORT_MSG_IF(
+            !std::isfinite(profile.startTimeSeconds) ||
+                profile.startTimeSeconds <= 1.0,
+            fieldPrefix
+                << ".startTime must be finite and after slice mapping at 1.0 s");
+
+        NS_ABORT_MSG_IF(
+            !std::isfinite(profile.stopTimeSeconds) ||
+                profile.stopTimeSeconds <= profile.startTimeSeconds,
+            fieldPrefix
+                << ".stopTime must be finite and greater than startTime");
+
+        NS_ABORT_MSG_IF(
+            profile.stopTimeSeconds > config->simTime,
+            fieldPrefix
+                << ".stopTime cannot exceed simulation.duration");
+
+        profile.packetSize =
+            static_cast<uint16_t>(packetSize);
     }
 
-    NS_ABORT_MSG_IF(config->trafficProfiles.empty(), "At least one traffic profile must be configured");
+    NS_ABORT_MSG_IF(
+        config->trafficProfiles.empty(),
+        "At least one traffic profile must be configured");
 }
 
 /**
@@ -719,6 +928,54 @@ std::string NestControlModeToString(NestControlMode mode)
         NS_ABORT_MSG("Unsupported controlMode value");
         return "unknown";
     }
+}
+
+std::string
+NestTrafficProtocolToString(NestTrafficProtocol protocol)
+{
+    switch (protocol)
+    {
+    case NestTrafficProtocol::UDP:
+        return "udp";
+
+    case NestTrafficProtocol::TCP:
+        return "tcp";
+    }
+
+    return "unknown";
+}
+
+std::string
+NestTrafficDirectionToString(NestTrafficDirection direction)
+{
+    switch (direction)
+    {
+    case NestTrafficDirection::DOWNLINK:
+        return "downlink";
+
+    case NestTrafficDirection::UPLINK:
+        return "uplink";
+
+    case NestTrafficDirection::BIDIRECTIONAL:
+        return "bidirectional";
+    }
+
+    return "unknown";
+}
+
+std::string
+NestTrafficDistributionToString(NestTrafficDistribution distribution)
+{
+    switch (distribution)
+    {
+    case NestTrafficDistribution::CONSTANT:
+        return "constant";
+
+    case NestTrafficDistribution::EXPONENTIAL:
+        return "exponential";
+    }
+
+    return "unknown";
 }
 
 std::string NestMobilityModelToString(NestMobilityModel model)

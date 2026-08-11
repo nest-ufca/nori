@@ -185,12 +185,14 @@ int main(int argc, char* argv[])
     std::vector<uint8_t> sstPerSlice;
     std::vector<std::string> trafficTypes;
 
-    // Per-traffic-type traffic parameters
+    // Structured traffic parameters supported by this legacy example.
     struct TrafficProfile {
         double dataRate;
         uint16_t packetSize;
-        double onTime;
-        double offTime;
+        double startTime;
+        double stopTime;
+        std::string onTimeRandomVariable;
+        std::string offTimeRandomVariable;
     };
     std::map<std::string, TrafficProfile> trafficProfiles;
 
@@ -235,27 +237,132 @@ int main(int argc, char* argv[])
             }
         }
 
-            // Ler parâmetros de tráfego para cada tipo (aceita qualquer chave em "traffic")
-            if (configJson.contains("traffic") && configJson["traffic"].is_object())
+            // Read the shared structured traffic contract. This legacy
+            // scenario intentionally supports only UDP downlink applications.
+            if (configJson.contains("traffic") &&
+                configJson["traffic"].is_object())
             {
-                for (auto& item : configJson["traffic"].items())
+                const auto buildDurationRandomVariable =
+                    [](const nlohmann::json& durationConfig,
+                       const std::string& fieldPath)
+                {
+                    NS_ABORT_MSG_UNLESS(
+                        durationConfig.is_object(),
+                        fieldPath << " must be an object");
+
+                    NS_ABORT_MSG_UNLESS(
+                        durationConfig.contains("distribution") &&
+                            durationConfig["distribution"].is_string(),
+                        fieldPath << ".distribution must be a string");
+
+                    const std::string distribution =
+                        durationConfig["distribution"].get<std::string>();
+
+                    if (distribution == "constant")
+                    {
+                        NS_ABORT_MSG_UNLESS(
+                            durationConfig.contains("value") &&
+                                durationConfig["value"].is_number(),
+                            fieldPath
+                                << ".value must be numeric for constant");
+
+                        return std::string(
+                                   "ns3::ConstantRandomVariable[Constant=") +
+                               std::to_string(
+                                   durationConfig["value"].get<double>()) +
+                               "]";
+                    }
+
+                    if (distribution == "exponential")
+                    {
+                        NS_ABORT_MSG_UNLESS(
+                            durationConfig.contains("mean") &&
+                                durationConfig["mean"].is_number(),
+                            fieldPath
+                                << ".mean must be numeric for exponential");
+
+                        return std::string(
+                                   "ns3::ExponentialRandomVariable[Mean=") +
+                               std::to_string(
+                                   durationConfig["mean"].get<double>()) +
+                               "]";
+                    }
+
+                    NS_ABORT_MSG(
+                        fieldPath
+                        << ".distribution must be one of: "
+                           "constant, exponential");
+
+                    return std::string();
+                };
+
+                for (const auto& item : configJson["traffic"].items())
                 {
                     const std::string trafficName = item.key();
-                    const auto& trafficConfig = item.value();
+                    const nlohmann::json& trafficConfig = item.value();
 
+                    // Ignore metadata entries such as "_comment".
                     if (!trafficConfig.is_object())
                     {
                         continue;
                     }
 
-                    TrafficProfile profile;
-                    profile.dataRate = trafficConfig.value("bitrateMbps", 0.0);
-                    profile.packetSize = trafficConfig.value("packetSize", static_cast<uint16_t>(0));
-                    profile.onTime = trafficConfig.value("onTimeMean", 1.0);
-                    profile.offTime = trafficConfig.value("offTimeMean", 0.01);
-                    trafficProfiles[trafficName] = profile;
+                    const std::string fieldPrefix =
+                        "traffic." + trafficName;
 
-                    NS_LOG_INFO("Traffic profile loaded: " << trafficName);
+                    NS_ABORT_MSG_UNLESS(
+                        trafficConfig.contains("protocol") &&
+                            trafficConfig["protocol"].is_string(),
+                        fieldPrefix << ".protocol must be a string");
+
+                    NS_ABORT_MSG_UNLESS(
+                        trafficConfig["protocol"].get<std::string>() ==
+                            "udp",
+                        "nori-embb-urllc-scenario supports only "
+                        << fieldPrefix << ".protocol=udp");
+
+                    NS_ABORT_MSG_UNLESS(
+                        trafficConfig.contains("direction") &&
+                            trafficConfig["direction"].is_string(),
+                        fieldPrefix << ".direction must be a string");
+
+                    NS_ABORT_MSG_UNLESS(
+                        trafficConfig["direction"].get<std::string>() ==
+                            "downlink",
+                        "nori-embb-urllc-scenario supports only "
+                        << fieldPrefix << ".direction=downlink");
+
+                    TrafficProfile profile;
+
+                    profile.dataRate =
+                        trafficConfig["bitrateMbps"].get<double>();
+
+                    profile.packetSize =
+                        trafficConfig["packetSize"].get<uint16_t>();
+
+                    profile.startTime =
+                        trafficConfig["startTime"].get<double>();
+
+                    profile.stopTime =
+                        trafficConfig["stopTime"].get<double>();
+
+                    profile.onTimeRandomVariable =
+                        buildDurationRandomVariable(
+                            trafficConfig["onTime"],
+                            fieldPrefix + ".onTime");
+
+                    profile.offTimeRandomVariable =
+                        buildDurationRandomVariable(
+                            trafficConfig["offTime"],
+                            fieldPrefix + ".offTime");
+
+                    trafficProfiles.emplace(
+                        trafficName,
+                        std::move(profile));
+
+                    NS_LOG_INFO(
+                        "Structured traffic profile loaded: "
+                        << trafficName);
                 }
             }
 
@@ -556,23 +663,40 @@ int main(int argc, char* argv[])
             NS_LOG_INFO("DEBUG DL for UE[" << nodeIdx << "] (" << ueAddr
                         << "): port " << port << " type " << resolvedTrafficType);
 
-            OnOffHelper trafficApp("ns3::UdpSocketFactory", InetSocketAddress(ueAddr, port));
-            trafficApp.SetAttribute("DataRate", DataRateValue(DataRate(std::to_string((int)profile.dataRate) + "Mbps")));
-            trafficApp.SetAttribute("PacketSize", UintegerValue(profile.packetSize));
-            
-            std::string onTimeStr = "ns3::ExponentialRandomVariable[Mean=" + std::to_string(profile.onTime) + "]";
-            std::string offTimeStr = "ns3::ExponentialRandomVariable[Mean=" + std::to_string(profile.offTime) + "]";
-            
-            trafficApp.SetAttribute("OnTime", StringValue(onTimeStr));
-            trafficApp.SetAttribute("OffTime", StringValue(offTimeStr));
-            trafficApp.SetAttribute("StartTime", TimeValue(Seconds(0.1)));
-            
-            ApplicationContainer sourceApps = trafficApp.Install(remoteHostContainer.Get(0));
-            
-            sourceApps.Start(Seconds(2.0));
-            sourceApps.Stop(Seconds(simTime));
+            OnOffHelper trafficApp(
+                "ns3::UdpSocketFactory",
+                InetSocketAddress(ueAddr, port));
 
-            NS_LOG_INFO("UE[" << nodeIdx << "] app installed and scheduled: start=2s, stop=" << simTime << "s");
+            trafficApp.SetAttribute(
+                "DataRate",
+                DataRateValue(
+                    DataRate(
+                        static_cast<uint64_t>(
+                            profile.dataRate * 1e6))));
+
+            trafficApp.SetAttribute(
+                "PacketSize",
+                UintegerValue(profile.packetSize));
+
+            trafficApp.SetAttribute(
+                "OnTime",
+                StringValue(profile.onTimeRandomVariable));
+
+            trafficApp.SetAttribute(
+                "OffTime",
+                StringValue(profile.offTimeRandomVariable));
+
+            ApplicationContainer sourceApps =
+                trafficApp.Install(remoteHostContainer.Get(0));
+
+            sourceApps.Start(Seconds(profile.startTime));
+            sourceApps.Stop(Seconds(profile.stopTime));
+
+            NS_LOG_INFO(
+                "UE[" << nodeIdx
+                << "] legacy UDP downlink app scheduled: start="
+                << profile.startTime
+                << "s, stop=" << profile.stopTime << "s");
         }
     }
 

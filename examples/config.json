@@ -83,32 +83,61 @@
     "_comment": "Physical parameters of the NR cell.",
     "numerology": 1,
     "bandwidthMHz": 100,
-    "centralFrequency": 3.5e9,
+    "centralFrequency": 3500000000.0,
     "txPower": 50,
     "ueTxPower": 23
   },
   "traffic": {
-    "_comment": "Traffic profiles per slice type (eMBB, URLLC).",
+    "_comment": "Application traffic profiles. For direction=bidirectional, bitrateMbps is offered independently in each direction.",
     "eMBB": {
       "_comment": "eMBB traffic: high throughput, less strict delay constraints.",
+      "protocol": "udp",
+      "direction": "downlink",
       "packetSize": 1400,
       "bitrateMbps": 100,
-      "onTimeMean": 1.0,
-      "offTimeMean": 0.0
+      "startTime": 2.0,
+      "stopTime": 5.0,
+      "onTime": {
+        "distribution": "exponential",
+        "mean": 1.0
+      },
+      "offTime": {
+        "distribution": "exponential",
+        "mean": 0.0
+      }
     },
     "URLLC": {
       "_comment": "URLLC traffic: lower throughput, higher reliability/low latency.",
+      "protocol": "udp",
+      "direction": "downlink",
       "packetSize": 1400,
       "bitrateMbps": 15,
-      "onTimeMean": 1.0,
-      "offTimeMean": 0.01
+      "startTime": 2.0,
+      "stopTime": 5.0,
+      "onTime": {
+        "distribution": "exponential",
+        "mean": 1.0
+      },
+      "offTime": {
+        "distribution": "exponential",
+        "mean": 0.01
+      }
     }
   },
   "slices": {
     "_comment": "RAN slicing configuration: number of UEs per slice and associated traffic type.",
     "numSlices": 2,
-    "UesPerSlice": [2, 2],
-    "trafficTypes": ["eMBB", "URLLC"],
-    "SstPerSlice": [1, 2]
+    "UesPerSlice": [
+      2,
+      2
+    ],
+    "trafficTypes": [
+      "eMBB",
+      "URLLC"
+    ],
+    "SstPerSlice": [
+      1,
+      2
+    ]
   }
 }
