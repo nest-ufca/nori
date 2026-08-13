@@ -326,6 +326,82 @@ struct NestTrafficProfile
 };
 
 /**
+ * Simulator execution behavior independent of the modeled radio scenario.
+ *
+ * Command-line values may override these fields for one execution. Realtime
+ * pacing is independent of E2 enablement.
+ */
+struct NestExecutionConfig
+{
+    bool enableRanSlicing{true};
+    bool realtime{false};
+};
+
+/**
+ * One optional CSV artifact without a periodic sampling interval.
+ *
+ * The file name is resolved relative to outputs.directory. A disabled output
+ * does not create or truncate its configured file.
+ */
+struct NestOutputFileConfig
+{
+    bool enabled{false};
+    std::string file;
+};
+
+/**
+ * One optional periodically sampled CSV artifact.
+ *
+ * The interval uses seconds and must remain finite and greater than zero,
+ * including when the output is disabled, so every configuration is complete.
+ */
+struct NestPeriodicOutputFileConfig
+{
+    bool enabled{false};
+    std::string file;
+    double interval{0.1};
+};
+
+/**
+ * Files produced directly by the maintained slicing scenario.
+ *
+ * The directory may be replaced by the future experiment runner for each
+ * policy and RNG run. File names remain stable inside every run directory.
+ * Simulator stdout and stderr are captured by that runner and therefore are
+ * not represented as an output opened by the simulator.
+ */
+struct NestOutputsConfig
+{
+    std::string directory{"."};
+
+    NestOutputFileConfig rbgAllocation{
+        false,
+        "rbg-allocation.csv"};
+
+    NestPeriodicOutputFileConfig mobility{
+        false,
+        "mobility-trace.csv",
+        0.1};
+
+    NestOutputFileConfig mimoFeedback{
+        false,
+        "mimo-feedback.csv"};
+
+    NestOutputFileConfig radioLink{
+        false,
+        "radio-link.csv"};
+
+    NestOutputFileConfig tcpTransport{
+        false,
+        "tcp-transport.csv"};
+
+    NestPeriodicOutputFileConfig sliceMetrics{
+        false,
+        "slice-metrics.csv",
+        0.1};
+};
+
+/**
  * E2 connection parameters used by the NEST scenario.
  */
 struct NestE2Config
@@ -336,7 +412,6 @@ struct NestE2Config
     std::string termAddress{"10.0.2.10"};
     uint16_t termPort{36421};
     uint16_t localPortBase{38470};
-    bool realtime{true};
 };
 
 /**
@@ -362,11 +437,10 @@ struct NestUePositionAreaConfig
 };
 
 /**
- * Complete JSON configuration used by the NEST eMBB/URLLC scenario.
+ * Complete JSON configuration used by the NEST slicing scenario.
  *
- * Command-line output paths and collection intervals remain outside this
- * structure because they describe execution artifacts rather than the
- * simulated network.
+ * The contract separates the modeled network and traffic from simulator
+ * execution behavior, produced artifacts and the optional E2 endpoint.
  */
 struct NestScenarioConfig
 {
@@ -393,6 +467,12 @@ struct NestScenarioConfig
     uint32_t rngSeed{1};
     uint64_t rngRun{1};
 
+    // Simulator behavior that does not describe the modeled radio network.
+    NestExecutionConfig execution;
+
+    // Optional files produced directly by the scenario.
+    NestOutputsConfig outputs;
+
     // NR radio parameters. Frequency and bandwidth are stored in hertz.
     double centralFrequency{3.6e9};
     double bandwidth{100e6};
@@ -403,7 +483,7 @@ struct NestScenarioConfig
     // Exclusive source allowed to change slice PRB quotas.
     NestControlMode controlMode{NestControlMode::NONE};
 
-    // Optional E2 connection. Disabled configurations remain fully offline.
+    // Explicit E2 connection. enabled=false remains fully offline.
     NestE2Config e2;
 
     // Per-slice vectors. The same index identifies one slice in all vectors.
@@ -436,7 +516,8 @@ struct NestScenarioConfig
 NestScenarioConfig
 LoadNestScenarioConfig(
     const std::string& configFilePath,
-    bool enableRanSlicing);
+    const std::optional<bool>& enableRanSlicingOverride =
+        std::nullopt);
 
 /**
  * Validate an E2 configuration after JSON parsing or CLI overrides.

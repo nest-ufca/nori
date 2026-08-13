@@ -354,81 +354,292 @@ int main(int argc, char* argv[])
     LogComponentEnable("E2Termination", LOG_LEVEL_INFO);
     //LogComponentEnable("NrRLMacSchedulerOfdma", LOG_LEVEL_INFO);
 
-    // Execution-level options controlled from the command line.
-    // Network topology, radio parameters, slices and traffic profiles are
-    // loaded from the JSON configuration file.
-    std::string configFilePath = "contrib/nori/examples/config.json";
+    // Read the configuration path and slicing override before constructing
+    // CommandLine so JSON values can become the command-line defaults.
+    const auto findCommandLineValue =
+        [argc, argv](
+            const std::string& name)
+            -> std::optional<std::string>
+        {
+            const std::string option = "--" + name;
+            const std::string prefix = option + "=";
+            std::optional<std::string> value;
 
-    bool enableRanSlicing = true;
+            for (int argumentIndex = 1;
+                 argumentIndex < argc;
+                 ++argumentIndex)
+            {
+                const std::string argument(argv[argumentIndex]);
+
+                if (argument.rfind(prefix, 0) == 0)
+                {
+                    value = argument.substr(prefix.size());
+                }
+                else if (
+                    argument == option &&
+                    argumentIndex + 1 < argc)
+                {
+                    value =
+                        std::string(argv[argumentIndex + 1]);
+                }
+            }
+
+            return value;
+        };
+
+    std::string configFilePath =
+        "contrib/nori/examples/config.json";
+
+    const std::optional<std::string> configFileOverride =
+        findCommandLineValue("configFile");
+
+    if (configFileOverride.has_value())
+    {
+        NS_ABORT_MSG_IF(
+            configFileOverride->empty(),
+            "--configFile cannot be empty");
+
+        configFilePath = configFileOverride.value();
+    }
+
+    std::optional<bool> enableRanSlicingBootstrapOverride;
+
+    const std::optional<std::string>
+        enableRanSlicingBootstrapValue =
+            findCommandLineValue("enableRanSlicing");
+
+    if (enableRanSlicingBootstrapValue.has_value())
+    {
+        enableRanSlicingBootstrapOverride =
+            ParseBooleanCommandLineOverride(
+                enableRanSlicingBootstrapValue.value(),
+                "--enableRanSlicing");
+    }
+
+    const NestScenarioConfig scenarioConfig =
+        LoadNestScenarioConfig(
+            configFilePath,
+            enableRanSlicingBootstrapOverride);
+
+    const std::string loadedConfigFilePath = configFilePath;
+
+    bool enableRanSlicing =
+        scenarioConfig.execution.enableRanSlicing;
+
+    bool realtime =
+        scenarioConfig.execution.realtime;
+
+    std::string realtimeOverride;
+
+    // Retained as a compatibility alias for existing commands.
+    std::string e2RealtimeOverride;
 
     std::string enableE2Override;
     std::string ipE2TermRic;
     uint32_t e2TermPortOverride{0};
     uint32_t e2LocalPortBaseOverride{0};
-    std::string e2RealtimeOverride;
 
-    std::string rbgTraceFilePath;
+    const auto resolveOutputFilePath =
+        [&scenarioConfig](const auto& output)
+            -> std::string
+        {
+            if (!output.enabled)
+            {
+                return "";
+            }
+
+            const std::string& directory =
+                scenarioConfig.outputs.directory;
+
+            if (directory == ".")
+            {
+                return output.file;
+            }
+
+            if (
+                directory.back() == '/' ||
+                directory.back() == '\\')
+            {
+                return directory + output.file;
+            }
+
+            return directory + "/" + output.file;
+        };
+
+    std::string rbgTraceFilePath =
+        resolveOutputFilePath(
+            scenarioConfig.outputs.rbgAllocation);
+
     std::ofstream rbgTraceStream;
 
-    std::string mobilityTraceFilePath;
-    std::ofstream mobilityTraceStream;
-    double mobilityTraceInterval = 0.1;
+    std::string mobilityTraceFilePath =
+        resolveOutputFilePath(
+            scenarioConfig.outputs.mobility);
 
-    std::string mimoTraceFilePath;
+    std::ofstream mobilityTraceStream;
+
+    double mobilityTraceInterval =
+        scenarioConfig.outputs.mobility.interval;
+
+    std::string mimoTraceFilePath =
+        resolveOutputFilePath(
+            scenarioConfig.outputs.mimoFeedback);
+
     std::ofstream mimoTraceStream;
 
-    std::string radioLinkTraceFilePath;
+    std::string radioLinkTraceFilePath =
+        resolveOutputFilePath(
+            scenarioConfig.outputs.radioLink);
+
     std::ofstream radioLinkTraceStream;
     NestRadioLinkTraceState radioLinkTraceState;
 
-    std::string tcpTransportTraceFilePath;
+    std::string tcpTransportTraceFilePath =
+        resolveOutputFilePath(
+            scenarioConfig.outputs.tcpTransport);
+
     std::ofstream tcpTransportTraceStream;
     std::vector<std::unique_ptr<NestTcpTransportTrace>>
         tcpTransportTraces;
 
-    std::string sliceMetricsFilePath;
+    std::string sliceMetricsFilePath =
+        resolveOutputFilePath(
+            scenarioConfig.outputs.sliceMetrics);
+
     std::ofstream sliceMetricsStream;
     SliceMetricsCollectorState sliceMetricsState;
 
-    double sliceMetricsInterval = 0.1;
+    double sliceMetricsInterval =
+        scenarioConfig.outputs.sliceMetrics.interval;
 
     CommandLine cmd;
 
-    cmd.AddValue("configFile", "Path to the scenario configuration file", configFilePath);
+    cmd.AddValue(
+        "configFile",
+        "Path to the scenario configuration file",
+        configFilePath);
 
-    cmd.AddValue("enableRanSlicing", "Enable RAN Slicing with RL scheduler", enableRanSlicing);
+    cmd.AddValue(
+        "enableRanSlicing",
+        "Override execution.enableRanSlicing from JSON",
+        enableRanSlicing);
 
-    cmd.AddValue("enableE2", "Override e2.enabled from JSON; true or false", enableE2Override);
+    cmd.AddValue(
+        "realtime",
+        "Override execution.realtime from JSON; true or false",
+        realtimeOverride);
 
-    cmd.AddValue("ipE2TermRic", "Override e2.termAddress from JSON", ipE2TermRic);
+    cmd.AddValue(
+        "enableE2",
+        "Override e2.enabled from JSON; true or false",
+        enableE2Override);
 
-    cmd.AddValue("e2TermPort", "Override e2.termPort from JSON; zero keeps the JSON value", e2TermPortOverride);
+    cmd.AddValue(
+        "ipE2TermRic",
+        "Override e2.termAddress from JSON",
+        ipE2TermRic);
 
-    cmd.AddValue("e2LocalPortBase", "Override e2.localPortBase from JSON; zero keeps the JSON value", e2LocalPortBaseOverride);
+    cmd.AddValue(
+        "e2TermPort",
+        "Override e2.termPort from JSON; zero keeps the JSON value",
+        e2TermPortOverride);
 
-    cmd.AddValue("e2Realtime", "Override e2.realtime from JSON; true or false", e2RealtimeOverride);
+    cmd.AddValue(
+        "e2LocalPortBase",
+        "Override e2.localPortBase from JSON; zero keeps the JSON value",
+        e2LocalPortBaseOverride);
 
-    cmd.AddValue("rbgTraceFile", "CSV output path for per-slice RBG allocation; empty disables the trace", rbgTraceFilePath);
+    cmd.AddValue(
+        "e2Realtime",
+        "Legacy alias for --realtime; true or false",
+        e2RealtimeOverride);
 
-    cmd.AddValue("mobilityTraceFile", "CSV output path for periodic gNB and UE positions; empty disables the trace", mobilityTraceFilePath);
+    cmd.AddValue(
+        "rbgTraceFile",
+        "Override outputs.rbgAllocation path; empty disables the trace",
+        rbgTraceFilePath);
 
-    cmd.AddValue("mobilityTraceInterval", "Mobility trace sampling interval in seconds", mobilityTraceInterval);
+    cmd.AddValue(
+        "mobilityTraceFile",
+        "Override outputs.mobility path; empty disables the trace",
+        mobilityTraceFilePath);
 
-    cmd.AddValue("mimoTraceFile", "CSV output path for per-UE CQI, MCS and rank feedback; empty disables the trace", mimoTraceFilePath);
+    cmd.AddValue(
+        "mobilityTraceInterval",
+        "Override outputs.mobility.interval in seconds",
+        mobilityTraceInterval);
 
-    cmd.AddValue("radioLinkTraceFile", "CSV output path for correlated position, pathloss and PHY reception measurements; empty disables the trace", radioLinkTraceFilePath);
+    cmd.AddValue(
+        "mimoTraceFile",
+        "Override outputs.mimoFeedback path; empty disables the trace",
+        mimoTraceFilePath);
 
-    cmd.AddValue("tcpTransportTraceFile", "CSV output path for TCP congestion-window and transport-state events; empty disables the trace", tcpTransportTraceFilePath);
+    cmd.AddValue(
+        "radioLinkTraceFile",
+        "Override outputs.radioLink path; empty disables the trace",
+        radioLinkTraceFilePath);
 
-    cmd.AddValue("sliceMetricsFile", "CSV output path for per-slice downlink window metrics; empty disables collection", sliceMetricsFilePath);
+    cmd.AddValue(
+        "tcpTransportTraceFile",
+        "Override outputs.tcpTransport path; empty disables the trace",
+        tcpTransportTraceFilePath);
 
-    cmd.AddValue("sliceMetricsInterval", "Duration of each slice metric observation window in seconds", sliceMetricsInterval);
+    cmd.AddValue(
+        "sliceMetricsFile",
+        "Override outputs.sliceMetrics path; empty disables collection",
+        sliceMetricsFilePath);
+
+    cmd.AddValue(
+        "sliceMetricsInterval",
+        "Override outputs.sliceMetrics.interval in seconds",
+        sliceMetricsInterval);
 
     cmd.Parse(argc, argv);
 
-    // Load and validate all JSON-controlled network, radio, traffic and
-    // slicing parameters after parsing the selected configuration path.
-    const NestScenarioConfig scenarioConfig = LoadNestScenarioConfig(configFilePath, enableRanSlicing);
+    NS_ABORT_MSG_IF(
+        configFilePath != loadedConfigFilePath,
+        "Internal command-line bootstrap mismatch for --configFile");
+
+    NS_ABORT_MSG_IF(
+        enableRanSlicing !=
+            scenarioConfig.execution.enableRanSlicing,
+        "Internal command-line bootstrap mismatch for "
+        "--enableRanSlicing");
+
+    if (!realtimeOverride.empty())
+    {
+        realtime =
+            ParseBooleanCommandLineOverride(
+                realtimeOverride,
+                "--realtime");
+    }
+
+    if (!e2RealtimeOverride.empty())
+    {
+        const bool legacyRealtime =
+            ParseBooleanCommandLineOverride(
+                e2RealtimeOverride,
+                "--e2Realtime");
+
+        NS_ABORT_MSG_IF(
+            !realtimeOverride.empty() &&
+                realtime != legacyRealtime,
+            "--realtime and --e2Realtime cannot specify "
+            "different values");
+
+        realtime = legacyRealtime;
+    }
+
+    std::cout
+        << "RAN slicing execution: "
+        << (enableRanSlicing ? "enabled" : "disabled")
+        << std::endl;
+
+    std::cout
+        << "Realtime execution: "
+        << (realtime ? "enabled" : "disabled")
+        << std::endl;
+
 
     NS_ABORT_MSG_IF(!mimoTraceFilePath.empty() && !scenarioConfig.mimo.enabled, "MIMO feedback trace requires mimo.enabled=true");
 
@@ -529,14 +740,6 @@ int main(int argc, char* argv[])
 
         e2Config.localPortBase =
             static_cast<uint16_t>(e2LocalPortBaseOverride);
-    }
-
-    if (!e2RealtimeOverride.empty())
-    {
-        e2Config.realtime =
-            ParseBooleanCommandLineOverride(
-                e2RealtimeOverride,
-                "--e2Realtime");
     }
 
     ValidateNestE2Config(
@@ -695,11 +898,11 @@ int main(int argc, char* argv[])
 
     kpmGnbDuUeContexts.reserve(ueNum);
 
-    if (e2Config.enabled && e2Config.realtime)
+    if (realtime)
     {
         GlobalValue::Bind("SimulatorImplementationType", StringValue("ns3::RealtimeSimulatorImpl"));
 
-        NS_LOG_INFO("Realtime simulator enabled for E2 communication");
+        NS_LOG_INFO("Realtime simulator enabled");
     }
     else
     {

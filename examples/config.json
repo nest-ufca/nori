@@ -79,6 +79,50 @@
     "rngSeed": 1,
     "rngRun": 1
   },
+  "execution": {
+    "_comment": "Simulator execution behavior independent of the modeled network.",
+    "enableRanSlicing": true,
+    "realtime": false
+  },
+  "outputs": {
+    "_comment": "Optional CSV artifacts. File names are resolved relative to directory.",
+    "directory": ".",
+    "rbgAllocation": {
+      "enabled": false,
+      "file": "rbg-allocation.csv"
+    },
+    "mobility": {
+      "enabled": false,
+      "file": "mobility-trace.csv",
+      "interval": 0.1
+    },
+    "mimoFeedback": {
+      "enabled": false,
+      "file": "mimo-feedback.csv"
+    },
+    "radioLink": {
+      "enabled": false,
+      "file": "radio-link.csv"
+    },
+    "tcpTransport": {
+      "enabled": false,
+      "file": "tcp-transport.csv"
+    },
+    "sliceMetrics": {
+      "enabled": false,
+      "file": "slice-metrics.csv",
+      "interval": 0.1
+    }
+  },
+  "e2": {
+    "_comment": "Optional E2 endpoint. enabled=false keeps the scenario fully offline.",
+    "enabled": false,
+    "mcc": "001",
+    "mnc": "01",
+    "termAddress": "10.0.2.10",
+    "termPort": 36421,
+    "localPortBase": 38470
+  },
   "NR": {
     "_comment": "Physical parameters of the NR cell.",
     "numerology": 1,

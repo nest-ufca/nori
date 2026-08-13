@@ -1262,45 +1262,314 @@ std::optional<LocalSliceControllerConfig> ParseLocalSliceController(const nlohma
 }
 
 /**
- * Parse the optional E2 connection section.
+ * Parse simulator execution behavior independent of the modeled network.
  */
-NestE2Config ParseE2Configuration(const nlohmann::json& configJson, uint16_t gNbNum)
+void
+ParseExecutionConfiguration(
+    const nlohmann::json& executionJson,
+    NestScenarioConfig* config)
 {
-    NestE2Config e2Config;
+    NS_ABORT_MSG_IF(
+        config == nullptr,
+        "Scenario configuration pointer is null");
 
-    if (!configJson.contains("e2"))
+    NS_ABORT_MSG_UNLESS(
+        executionJson.is_object(),
+        "execution must be a JSON object");
+
+    NS_ABORT_MSG_UNLESS(
+        executionJson.contains("enableRanSlicing") &&
+            executionJson["enableRanSlicing"].is_boolean(),
+        "execution.enableRanSlicing must be a boolean");
+
+    NS_ABORT_MSG_UNLESS(
+        executionJson.contains("realtime") &&
+            executionJson["realtime"].is_boolean(),
+        "execution.realtime must be a boolean");
+
+    config->execution.enableRanSlicing =
+        executionJson["enableRanSlicing"].get<bool>();
+
+    config->execution.realtime =
+        executionJson["realtime"].get<bool>();
+}
+
+/**
+ * Validate and parse one optional output file.
+ */
+NestOutputFileConfig
+ParseOutputFileConfiguration(
+    const nlohmann::json& outputJson,
+    const std::string& fieldPath)
+{
+    NS_ABORT_MSG_UNLESS(
+        outputJson.is_object(),
+        fieldPath << " must be a JSON object");
+
+    NS_ABORT_MSG_UNLESS(
+        outputJson.contains("enabled") &&
+            outputJson["enabled"].is_boolean(),
+        fieldPath << ".enabled must be a boolean");
+
+    NS_ABORT_MSG_UNLESS(
+        outputJson.contains("file") &&
+            outputJson["file"].is_string(),
+        fieldPath << ".file must be a string");
+
+    NestOutputFileConfig output;
+    output.enabled = outputJson["enabled"].get<bool>();
+    output.file = outputJson["file"].get<std::string>();
+
+    NS_ABORT_MSG_IF(
+        output.file.empty(),
+        fieldPath << ".file cannot be empty");
+
+    NS_ABORT_MSG_IF(
+        output.file == "." ||
+            output.file == ".." ||
+            output.file.find_first_of("/\\") != std::string::npos,
+        fieldPath
+            << ".file must be a plain file name without directories");
+
+    NS_ABORT_MSG_IF(
+        output.file.find('\0') != std::string::npos,
+        fieldPath << ".file cannot contain a null character");
+
+    return output;
+}
+
+/**
+ * Validate and parse one output file with a sampling interval.
+ */
+NestPeriodicOutputFileConfig
+ParsePeriodicOutputFileConfiguration(
+    const nlohmann::json& outputJson,
+    const std::string& fieldPath)
+{
+    const NestOutputFileConfig fileConfig =
+        ParseOutputFileConfiguration(
+            outputJson,
+            fieldPath);
+
+    NS_ABORT_MSG_UNLESS(
+        outputJson.contains("interval") &&
+            outputJson["interval"].is_number(),
+        fieldPath << ".interval must be numeric");
+
+    const double interval =
+        outputJson["interval"].get<double>();
+
+    NS_ABORT_MSG_IF(
+        !std::isfinite(interval) || interval <= 0.0,
+        fieldPath
+            << ".interval must be finite and greater than zero");
+
+    NestPeriodicOutputFileConfig output;
+    output.enabled = fileConfig.enabled;
+    output.file = fileConfig.file;
+    output.interval = interval;
+
+    return output;
+}
+
+/**
+ * Parse optional CSV output destinations.
+ */
+void
+ParseOutputsConfiguration(
+    const nlohmann::json& outputsJson,
+    NestScenarioConfig* config)
+{
+    NS_ABORT_MSG_IF(
+        config == nullptr,
+        "Scenario configuration pointer is null");
+
+    NS_ABORT_MSG_UNLESS(
+        outputsJson.is_object(),
+        "outputs must be a JSON object");
+
+    NS_ABORT_MSG_UNLESS(
+        outputsJson.contains("directory") &&
+            outputsJson["directory"].is_string(),
+        "outputs.directory must be a string");
+
+    const std::vector<std::string> requiredOutputs{
+        "rbgAllocation",
+        "mobility",
+        "mimoFeedback",
+        "radioLink",
+        "tcpTransport",
+        "sliceMetrics"};
+
+    for (const std::string& outputName : requiredOutputs)
     {
-        ValidateNestE2Config(e2Config, gNbNum);
-        return e2Config;
+        NS_ABORT_MSG_UNLESS(
+            outputsJson.contains(outputName) &&
+                outputsJson[outputName].is_object(),
+            "outputs."
+                << outputName
+                << " must be a JSON object");
     }
 
-    const nlohmann::json& e2Json = configJson["e2"];
+    NestOutputsConfig outputs;
+    outputs.directory =
+        outputsJson["directory"].get<std::string>();
 
-    NS_ABORT_MSG_UNLESS(e2Json.is_object(), "e2 must be a JSON object");
+    NS_ABORT_MSG_IF(
+        outputs.directory.empty(),
+        "outputs.directory cannot be empty");
 
-    e2Config.enabled = e2Json.value("enabled", e2Config.enabled);
+    NS_ABORT_MSG_IF(
+        outputs.directory.find('\0') != std::string::npos,
+        "outputs.directory cannot contain a null character");
 
-    e2Config.mcc = e2Json.value("mcc", e2Config.mcc);
+    outputs.rbgAllocation =
+        ParseOutputFileConfiguration(
+            outputsJson["rbgAllocation"],
+            "outputs.rbgAllocation");
 
-    e2Config.mnc = e2Json.value("mnc", e2Config.mnc);
+    outputs.mobility =
+        ParsePeriodicOutputFileConfiguration(
+            outputsJson["mobility"],
+            "outputs.mobility");
 
-    e2Config.termAddress = e2Json.value("termAddress", e2Config.termAddress);
+    outputs.mimoFeedback =
+        ParseOutputFileConfiguration(
+            outputsJson["mimoFeedback"],
+            "outputs.mimoFeedback");
 
-    e2Config.realtime = e2Json.value("realtime", e2Config.realtime);
+    outputs.radioLink =
+        ParseOutputFileConfiguration(
+            outputsJson["radioLink"],
+            "outputs.radioLink");
 
-    const int64_t termPort = e2Json.value("termPort", static_cast<int64_t>(e2Config.termPort));
+    outputs.tcpTransport =
+        ParseOutputFileConfiguration(
+            outputsJson["tcpTransport"],
+            "outputs.tcpTransport");
 
-    const int64_t localPortBase = e2Json.value("localPortBase", static_cast<int64_t>(e2Config.localPortBase));
+    outputs.sliceMetrics =
+        ParsePeriodicOutputFileConfiguration(
+            outputsJson["sliceMetrics"],
+            "outputs.sliceMetrics");
 
-    NS_ABORT_MSG_IF(termPort <= 0 || termPort > std::numeric_limits<uint16_t>::max(), "e2.termPort must be in the range 1..65535");
+    const std::vector<std::string> outputFileNames{
+        outputs.rbgAllocation.file,
+        outputs.mobility.file,
+        outputs.mimoFeedback.file,
+        outputs.radioLink.file,
+        outputs.tcpTransport.file,
+        outputs.sliceMetrics.file};
 
-    NS_ABORT_MSG_IF(localPortBase <= 0 || localPortBase > std::numeric_limits<uint16_t>::max(), "e2.localPortBase must be in the range 1..65535");
+    for (std::size_t first = 0;
+         first < outputFileNames.size();
+         ++first)
+    {
+        for (std::size_t second = first + 1;
+             second < outputFileNames.size();
+             ++second)
+        {
+            NS_ABORT_MSG_IF(
+                outputFileNames[first] ==
+                    outputFileNames[second],
+                "outputs file names must be distinct; duplicate: "
+                    << outputFileNames[first]);
+        }
+    }
 
-    e2Config.termPort = static_cast<uint16_t>(termPort);
+    config->outputs = outputs;
+}
 
-    e2Config.localPortBase = static_cast<uint16_t>(localPortBase);
+/**
+ * Parse the explicit E2 connection section.
+ *
+ * The section is always present, while enabled=false keeps the scenario
+ * fully offline. Simulator realtime behavior belongs to execution.realtime.
+ */
+NestE2Config
+ParseE2Configuration(
+    const nlohmann::json& e2Json,
+    uint16_t gNbNum)
+{
+    NS_ABORT_MSG_UNLESS(
+        e2Json.is_object(),
+        "e2 must be a JSON object");
 
-    ValidateNestE2Config(e2Config, gNbNum);
+    NS_ABORT_MSG_IF(
+        e2Json.contains("realtime"),
+        "e2.realtime is no longer supported; "
+        "use execution.realtime");
+
+    NS_ABORT_MSG_UNLESS(
+        e2Json.contains("enabled") &&
+            e2Json["enabled"].is_boolean(),
+        "e2.enabled must be a boolean");
+
+    NS_ABORT_MSG_UNLESS(
+        e2Json.contains("mcc") &&
+            e2Json["mcc"].is_string(),
+        "e2.mcc must be a string");
+
+    NS_ABORT_MSG_UNLESS(
+        e2Json.contains("mnc") &&
+            e2Json["mnc"].is_string(),
+        "e2.mnc must be a string");
+
+    NS_ABORT_MSG_UNLESS(
+        e2Json.contains("termAddress") &&
+            e2Json["termAddress"].is_string(),
+        "e2.termAddress must be a string");
+
+    NS_ABORT_MSG_UNLESS(
+        e2Json.contains("termPort") &&
+            (e2Json["termPort"].is_number_integer() ||
+             e2Json["termPort"].is_number_unsigned()),
+        "e2.termPort must be an integer");
+
+    NS_ABORT_MSG_UNLESS(
+        e2Json.contains("localPortBase") &&
+            (e2Json["localPortBase"].is_number_integer() ||
+             e2Json["localPortBase"].is_number_unsigned()),
+        "e2.localPortBase must be an integer");
+
+    NestE2Config e2Config;
+    e2Config.enabled =
+        e2Json["enabled"].get<bool>();
+    e2Config.mcc =
+        e2Json["mcc"].get<std::string>();
+    e2Config.mnc =
+        e2Json["mnc"].get<std::string>();
+    e2Config.termAddress =
+        e2Json["termAddress"].get<std::string>();
+
+    const int64_t termPort =
+        e2Json["termPort"].get<int64_t>();
+
+    const int64_t localPortBase =
+        e2Json["localPortBase"].get<int64_t>();
+
+    NS_ABORT_MSG_IF(
+        termPort <= 0 ||
+            termPort >
+                std::numeric_limits<uint16_t>::max(),
+        "e2.termPort must be in the range 1..65535");
+
+    NS_ABORT_MSG_IF(
+        localPortBase <= 0 ||
+            localPortBase >
+                std::numeric_limits<uint16_t>::max(),
+        "e2.localPortBase must be in the range 1..65535");
+
+    e2Config.termPort =
+        static_cast<uint16_t>(termPort);
+
+    e2Config.localPortBase =
+        static_cast<uint16_t>(localPortBase);
+
+    ValidateNestE2Config(
+        e2Config,
+        gNbNum);
+
     return e2Config;
 }
 
@@ -1499,7 +1768,10 @@ void ValidateNestE2Config(const NestE2Config& config, uint16_t gNbNum)
 /**
  * Load and validate the complete JSON configuration for the NEST scenario.
  */
-NestScenarioConfig LoadNestScenarioConfig(const std::string& configFilePath, bool enableRanSlicing)
+NestScenarioConfig
+LoadNestScenarioConfig(
+    const std::string& configFilePath,
+    const std::optional<bool>& enableRanSlicingOverride)
 {
     // Open the scenario configuration file.
     std::ifstream configFile(configFilePath);
@@ -1535,14 +1807,29 @@ NestScenarioConfig LoadNestScenarioConfig(const std::string& configFilePath, boo
 
     NS_ABORT_MSG_UNLESS(configJson.contains("simulation") && configJson["simulation"].is_object(), "The scenario must contain a simulation object");
 
+    NS_ABORT_MSG_UNLESS(configJson.contains("execution") && configJson["execution"].is_object(), "The scenario must contain an execution object");
+
+    NS_ABORT_MSG_UNLESS(configJson.contains("outputs") && configJson["outputs"].is_object(), "The scenario must contain an outputs object");
+
+    NS_ABORT_MSG_UNLESS(configJson.contains("e2") && configJson["e2"].is_object(), "The scenario must contain an e2 object");
+
     NS_ABORT_MSG_UNLESS(configJson.contains("NR") && configJson["NR"].is_object(), "The scenario must contain an NR object");
 
-    // Parse topology, mobility, channel, antennas, MIMO, simulation and NR parameters.
+    // Parse topology, mobility, channel, antennas, MIMO, execution, outputs, simulation and NR parameters.
     ParseTopologyConfiguration(configJson["topology"], &config);
     ParseMobilityConfiguration(configJson["mobility"], &config);
     ParseChannelConfiguration(configJson["channel"], &config);
     ParseAntennasConfiguration(configJson["antennas"], &config);
     ParseMimoConfiguration(configJson["mimo"], &config);
+    ParseExecutionConfiguration(configJson["execution"], &config);
+    ParseOutputsConfiguration(configJson["outputs"], &config);
+
+    // An explicit command-line value takes precedence over execution JSON.
+    if (enableRanSlicingOverride.has_value())
+    {
+        config.execution.enableRanSlicing =
+            enableRanSlicingOverride.value();
+    }
 
     const nlohmann::json& simulationJson = configJson["simulation"];
 
@@ -1586,8 +1873,11 @@ NestScenarioConfig LoadNestScenarioConfig(const std::string& configFilePath, boo
 
     config.controlMode = ParseNestControlMode(configJson);
 
-    // Parse the optional E2 endpoint independently from slicing control.
-    config.e2 = ParseE2Configuration(configJson, config.gNbNum);
+    // Parse the E2 endpoint independently from slicing control.
+    config.e2 =
+        ParseE2Configuration(
+            configJson["e2"],
+            config.gNbNum);
 
     // Parse structured traffic, slice and control configurations.
     ParseTrafficProfiles(configJson, &config);
@@ -1596,12 +1886,21 @@ NestScenarioConfig LoadNestScenarioConfig(const std::string& configFilePath, boo
 
     ParseSliceConfiguration(configJson, &config);
 
-    ParseLocalPrbQuotaActions(configJson, enableRanSlicing, &config);
+    ParseLocalPrbQuotaActions(
+        configJson,
+        config.execution.enableRanSlicing,
+        &config);
 
-    config.localSliceController = ParseLocalSliceController(configJson, enableRanSlicing, config);
+    config.localSliceController =
+        ParseLocalSliceController(
+            configJson,
+            config.execution.enableRanSlicing,
+            config);
 
     // Validate the exclusive source allowed to change scheduler quotas.
-    ValidateNestControlMode(config, enableRanSlicing);
+    ValidateNestControlMode(
+        config,
+        config.execution.enableRanSlicing);
 
     return config;
 }
