@@ -487,7 +487,7 @@ struct NestScenarioConfig
     NestE2Config e2;
 
     // Per-slice vectors. The same index identifies one slice in all vectors.
-    std::vector<int> uesPerSlice;
+    std::vector<uint32_t> uesPerSlice;
     std::vector<uint8_t> sstPerSlice;
     std::vector<std::string> trafficTypes;
 

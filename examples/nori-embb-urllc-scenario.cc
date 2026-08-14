@@ -169,7 +169,7 @@ int main(int argc, char* argv[])
     //LogComponentEnable("NrRLMacSchedulerOfdma", LOG_LEVEL_INFO);
 
     uint16_t gNbNum = 1;
-    uint16_t ueNum = 2;
+    uint32_t ueNum = 2;
     double simTime = 10.0;
     double interSiteDistance = 20.0;
     double centralFrequency = 3.6e9;
@@ -181,7 +181,7 @@ int main(int argc, char* argv[])
 
     std::string ipE2TermRic = "10.244.0.188";
 
-    std::vector<int> uesPerSlice;
+    std::vector<uint32_t> uesPerSlice;
     std::vector<uint8_t> sstPerSlice;
     std::vector<std::string> trafficTypes;
 
@@ -227,7 +227,7 @@ int main(int argc, char* argv[])
 
         for (uint32_t& item : jsonSlices) {
             NS_LOG_INFO("Number of UEs per slice: " << item);
-            uesPerSlice.push_back(static_cast<int>(item));
+            uesPerSlice.push_back(item);
         }
 
         if (configJson["slices"].contains("trafficTypes")) {
@@ -395,7 +395,10 @@ int main(int argc, char* argv[])
                          << " configured SST from JSON: " << static_cast<uint32_t>(sst));
         }
 
-        ueNum = std::accumulate(uesPerSlice.begin(), uesPerSlice.end(), 0);
+        ueNum = std::accumulate(
+            uesPerSlice.begin(),
+            uesPerSlice.end(),
+            uint32_t{0});
         NS_LOG_INFO("Total number of UEs (from slice configuration): " << ueNum);
 
     }else {
@@ -627,7 +630,7 @@ int main(int argc, char* argv[])
 
     for (size_t sliceId = 0; sliceId < uesPerSlice.size(); ++sliceId) 
     {
-        int countUes = uesPerSlice[sliceId];
+        uint32_t countUes = uesPerSlice[sliceId];
         
         // Traffic type per slice from configuration (fallback to first available profile)
         std::string trafficType = (sliceId < trafficTypes.size())
@@ -636,7 +639,7 @@ int main(int argc, char* argv[])
 
         NS_LOG_INFO("Slice " << sliceId << " configured with traffic type: " << trafficType);
 
-        for (int k = 0; k < countUes; ++k) 
+        for (uint32_t k = 0; k < countUes; ++k)
         {
             if (currentUeIndex >= ueNodes.GetN()) break;
 

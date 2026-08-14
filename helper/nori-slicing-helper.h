@@ -34,7 +34,7 @@ class NoriSlicingHelper
      */
     static void ScheduleSliceMapping(Time when,
                      bool enableRanSlicing,
-                     const std::vector<int>& uesPerSlice,
+                     const std::vector<uint32_t>& uesPerSlice,
                      const std::vector<uint8_t>& sstPerSlice,
                      NetDeviceContainer gNbDevs,
                      NetDeviceContainer ueDevs);
@@ -59,7 +59,7 @@ class NoriSlicingHelper
      * It is invoked by Simulator::Schedule from ScheduleSliceMapping().
      */
     static void ConfigureSliceMapping(bool enableRanSlicing,
-                      std::vector<int> uesPerSlice,
+                      std::vector<uint32_t> uesPerSlice,
                       std::vector<uint8_t> sstPerSlice,
                       NetDeviceContainer gNbDevs,
                       NetDeviceContainer ueDevs);

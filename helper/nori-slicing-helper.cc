@@ -32,7 +32,7 @@ NoriSlicingHelper::GetSstForRnti(uint16_t rnti)
 void
 NoriSlicingHelper::ScheduleSliceMapping(Time when,
                                         bool enableRanSlicing,
-                                        const std::vector<int>& uesPerSlice,
+                                        const std::vector<uint32_t>& uesPerSlice,
                                         const std::vector<uint8_t>& sstPerSlice,
                                         NetDeviceContainer gNbDevs,
                                         NetDeviceContainer ueDevs)
@@ -63,7 +63,7 @@ NoriSlicingHelper::ScheduleSliceMapping(Time when,
 
 void
 NoriSlicingHelper::ConfigureSliceMapping(bool enableRanSlicing,
-                                         std::vector<int> uesPerSlice,
+                                         std::vector<uint32_t> uesPerSlice,
                                          std::vector<uint8_t> sstPerSlice,
                                          NetDeviceContainer gNbDevs,
                                          NetDeviceContainer ueDevs)
@@ -107,8 +107,8 @@ NoriSlicingHelper::ConfigureSliceMapping(bool enableRanSlicing,
 
     for (size_t sliceId = 0; sliceId < uesPerSlice.size(); ++sliceId)
     {
-        int numUesInSlice = uesPerSlice[sliceId];
-        for (int k = 0; k < numUesInSlice; ++k)
+        uint32_t numUesInSlice = uesPerSlice[sliceId];
+        for (uint32_t k = 0; k < numUesInSlice; ++k)
         {
             if (currentUeIdx < ueDevs.GetN())
             {

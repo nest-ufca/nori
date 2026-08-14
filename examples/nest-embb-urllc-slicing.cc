@@ -798,7 +798,7 @@ int main(int argc, char* argv[])
     const double ueTxPower =
         scenarioConfig.ueTxPower;
 
-    const std::vector<int>& uesPerSlice =
+    const std::vector<uint32_t>& uesPerSlice =
         scenarioConfig.uesPerSlice;
 
     const std::vector<uint8_t>& sstPerSlice =
@@ -1556,7 +1556,7 @@ int main(int argc, char* argv[])
          sliceId < uesPerSlice.size();
          ++sliceId)
     {
-        const int countUes = uesPerSlice[sliceId];
+        const uint32_t countUes = uesPerSlice[sliceId];
         const std::string& trafficType =
             trafficTypes.at(sliceId);
 
@@ -1618,7 +1618,7 @@ int main(int argc, char* argv[])
             << " configured with traffic type: "
             << trafficType);
 
-        for (int sliceUeIndex = 0;
+        for (uint32_t sliceUeIndex = 0;
              sliceUeIndex < countUes;
              ++sliceUeIndex)
         {

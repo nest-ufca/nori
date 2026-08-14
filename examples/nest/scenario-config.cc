@@ -1120,7 +1120,7 @@ void ParseSliceConfiguration(const nlohmann::json& configJson, NestScenarioConfi
                 config->trafficProfiles.end(),
             "Slice refers to an unknown traffic profile");
 
-        config->uesPerSlice.push_back(static_cast<int>(ueCounts[sliceIndex]));
+        config->uesPerSlice.push_back(ueCounts[sliceIndex]);
 
         config->sstPerSlice.push_back(sst);
 
