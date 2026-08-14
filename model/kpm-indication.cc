@@ -364,32 +364,39 @@ KpmIndicationMessage::FillODuContainer(PF_Container_t* ranContainer, Ptr<ODuCont
             Ptr<OctetString> servedPlmnId = Create<OctetString>(servedPlmnCell->m_plmId, 3);
             sppcl->pLMN_Identity = servedPlmnId->GetValue();
 
-            auto* edpc = (EPC_DU_PM_Container_t*)calloc(1, sizeof(EPC_DU_PM_Container_t));
-
-            for (auto perQciReportItem : servedPlmnCell->m_perQciReportItems)
+            // Both DU PM containers are optional in ASN.1. Encode the
+            // legacy EPC container only when the caller supplied genuine
+            // per-QCI accounting.
+            if (!servedPlmnCell->m_perQciReportItems.empty())
             {
-                NS_LOG_LOGIC("O-DU: Add Per QCI Report Item");
-                auto* pqrl = (PerQCIReportListItem_t*)calloc(1, sizeof(PerQCIReportListItem_t));
-                pqrl->qci = perQciReportItem->m_qci;
+                auto* edpc = (EPC_DU_PM_Container_t*)calloc(1, sizeof(EPC_DU_PM_Container_t));
 
-                NS_ABORT_MSG_IF((perQciReportItem->m_dlPrbUsage < 0) |
-                                    (perQciReportItem->m_dlPrbUsage > 100),
-                                "As per ASN definition, dl_PRBUsage should be between 0 and 100");
-                long* dlUsedPrbs = (long*)calloc(1, sizeof(long));
-                *dlUsedPrbs = perQciReportItem->m_dlPrbUsage;
-                pqrl->dl_PRBUsage = dlUsedPrbs;
-                NS_LOG_LOGIC("DL PRBs " << dlUsedPrbs);
+                for (auto perQciReportItem : servedPlmnCell->m_perQciReportItems)
+                {
+                    NS_LOG_LOGIC("O-DU: Add Per QCI Report Item");
+                    auto* pqrl = (PerQCIReportListItem_t*)calloc(1, sizeof(PerQCIReportListItem_t));
+                    pqrl->qci = perQciReportItem->m_qci;
 
-                NS_ABORT_MSG_IF((perQciReportItem->m_ulPrbUsage < 0) |
-                                    (perQciReportItem->m_ulPrbUsage > 100),
-                                "As per ASN definition, ul_PRBUsage should be between 0 and 100");
-                long* ulUsedPrbs = (long*)calloc(1, sizeof(long));
-                *ulUsedPrbs = perQciReportItem->m_ulPrbUsage;
-                pqrl->ul_PRBUsage = ulUsedPrbs;
-                ASN_SEQUENCE_ADD(&edpc->perQCIReportList_du.list, pqrl);
+                    NS_ABORT_MSG_IF((perQciReportItem->m_dlPrbUsage < 0) |
+                                        (perQciReportItem->m_dlPrbUsage > 100),
+                                    "As per ASN definition, dl_PRBUsage should be between 0 and 100");
+                    long* dlUsedPrbs = (long*)calloc(1, sizeof(long));
+                    *dlUsedPrbs = perQciReportItem->m_dlPrbUsage;
+                    pqrl->dl_PRBUsage = dlUsedPrbs;
+                    NS_LOG_LOGIC("DL PRBs " << dlUsedPrbs);
+
+                    NS_ABORT_MSG_IF((perQciReportItem->m_ulPrbUsage < 0) |
+                                        (perQciReportItem->m_ulPrbUsage > 100),
+                                    "As per ASN definition, ul_PRBUsage should be between 0 and 100");
+                    long* ulUsedPrbs = (long*)calloc(1, sizeof(long));
+                    *ulUsedPrbs = perQciReportItem->m_ulPrbUsage;
+                    pqrl->ul_PRBUsage = ulUsedPrbs;
+                    ASN_SEQUENCE_ADD(&edpc->perQCIReportList_du.list, pqrl);
+                }
+
+                sppcl->du_PM_EPC = edpc;
             }
 
-            sppcl->du_PM_EPC = edpc;
             ASN_SEQUENCE_ADD(&crrli->servedPlmnPerCellList.list, sppcl);
         }
     }

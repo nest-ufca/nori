@@ -1865,8 +1865,7 @@ E2Interface::BuildRicIndicationMessageDu(std::string plmId, uint16_t nrCellId)
     // directions of the paired carrier.
     const long ulAvailablePrbs =
         static_cast<long>(availablePrbs);
-    long qci = 1;
-    const long dlPrbUsage =
+    const long cellDlPrbUsagePercent =
         std::min(
             static_cast<long>(
                 prbUtilizationDl /
@@ -1874,7 +1873,7 @@ E2Interface::BuildRicIndicationMessageDu(std::string plmId, uint16_t nrCellId)
                     dlAvailablePrbs) *
                 100.0),
             100L);
-    const long ulPrbUsage = 0;
+    const long cellUlPrbUsagePercent = 0;
     // Uplink PRB utilization remains unavailable in this
     // legacy DU measurement container.
 
@@ -1914,12 +1913,11 @@ E2Interface::BuildRicIndicationMessageDu(std::string plmId, uint16_t nrCellId)
         servedPlmnPerCell->m_plmId = plmId;
         servedPlmnPerCell->m_nrCellId = nrCellId;
 
-        Ptr<EpcDuPmContainer> epcDuVal = Create<EpcDuPmContainer>();
-        epcDuVal->m_qci = qci;
-        epcDuVal->m_dlPrbUsage = dlPrbUsage;
-        epcDuVal->m_ulPrbUsage = ulPrbUsage;
-
-        servedPlmnPerCell->m_perQciReportItems.insert(epcDuVal);
+        // The available PRBs and utilization are cell-wide measurements.
+        // Neither MAC accounting nor this collector attributes scheduled
+        // resources to individual bearers. Leave the optional EPC per-QCI
+        // and 5GC per-5QI containers absent instead of assigning the cell
+        // aggregate to an invented QoS identifier.
         cellResRep->m_servedPlmnPerCellItems.insert(servedPlmnPerCell);
 
         indicationMessageHelper->AddDuCellResRepPmItem(cellResRep);
@@ -1942,8 +1940,8 @@ E2Interface::BuildRicIndicationMessageDu(std::string plmId, uint16_t nrCellId)
         csv.seekp(0, std::ios::end);
         if (csv.tellp() == 0)
         {
-            csv << "timestamp,plmId,nrCellId,dlAvailablePrbs,ulAvailablePrbs,qci,dlPrbUsage,"
-                   "ulPrbUsage,"
+            csv << "timestamp,plmId,nrCellId,dlAvailablePrbs,ulAvailablePrbs,cellDlPrbUsagePercent,"
+                   "cellUlPrbUsagePercent,"
                    "macPduCellSpecific,macPduInitialCellSpecific,macQpskCellSpecific,"
                    "mac16QamCellSpecific,"
                    "mac64QamCellSpecific,prbUtilizationDl,macRetxCellSpecific,"
@@ -1968,8 +1966,8 @@ E2Interface::BuildRicIndicationMessageDu(std::string plmId, uint16_t nrCellId)
         std::string to_print_cell =
             std::to_string(timestamp) + "," + plmId + "," + std::to_string(nrCellId) + "," +
             std::to_string(dlAvailablePrbs) + "," + std::to_string(ulAvailablePrbs) + "," +
-            std::to_string(qci) + "," + std::to_string(dlPrbUsage) + "," +
-            std::to_string(ulPrbUsage) + "," + std::to_string(macPduCellSpecific) + "," +
+            std::to_string(cellDlPrbUsagePercent) + "," +
+            std::to_string(cellUlPrbUsagePercent) + "," + std::to_string(macPduCellSpecific) + "," +
             std::to_string(macPduInitialCellSpecific) + "," + std::to_string(macQpskCellSpecific) +
             "," + std::to_string(mac16QamCellSpecific) + "," +
             std::to_string(mac64QamCellSpecific) + "," +

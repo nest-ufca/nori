@@ -199,6 +199,12 @@ class ServedPlmnPerCell : public SimpleRefCount<ServedPlmnPerCell>
   public:
     std::string m_plmId; //!< PLMN identity, octet string, 3 bytes
     uint16_t m_nrCellId;
+    /**
+     * Optional legacy EPC measurements with real per-QCI accounting.
+     *
+     * Leave this set empty when PRB utilization is available only as a
+     * cell-wide aggregate. The ASN encoder will then omit du_PM_EPC.
+     */
     std::set<Ptr<EpcDuPmContainer>> m_perQciReportItems;
 };
 
