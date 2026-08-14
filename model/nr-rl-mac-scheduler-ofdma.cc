@@ -11,7 +11,8 @@
 #include "ns3/nr-fh-control.h"
 
 #include <algorithm>
-#include <random>
+#include <functional>
+#include <map>
 #include <sstream>
 
 namespace ns3

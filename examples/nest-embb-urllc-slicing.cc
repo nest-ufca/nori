@@ -28,19 +28,19 @@
 #include "ns3/point-to-point-module.h"
 #include "ns3/nori-slicing-helper.h"
 
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
-#include <map>
-
-#include <vector>
-#include <numeric>
-#include <cstdint>
-
-#include <set>
-#include <algorithm>
-#include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
+#include <optional>
+#include <set>
+#include <string>
+#include <vector>
 
 using namespace ns3;
 

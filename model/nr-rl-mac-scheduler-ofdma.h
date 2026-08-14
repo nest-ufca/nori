@@ -10,6 +10,10 @@
 #include "ns3/traced-callback.h"
 #include "ns3/traced-value.h"
 
+#include <cstdint>
+#include <memory>
+#include <vector>
+
 namespace ns3
 {
 
