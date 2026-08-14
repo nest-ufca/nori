@@ -989,10 +989,10 @@ int main(int argc, char* argv[])
     //nrHelper->SetGnbPhyAttribute("DciProcessingDelay", TimeValue(MicroSeconds(1.0)));
     //nrHelper->SetUePhyAttribute("DciProcessingDelay", TimeValue(MicroSeconds(1.0)));
 
-    // Configurar scheduler: RL com slicing ou RoundRobin padrão
+    // Select the quota-aware slicing scheduler or the baseline round-robin scheduler.
     std::string schedulerType = enableRanSlicing ? "ns3::NrRLMacSchedulerOfdma" : "ns3::NrMacSchedulerOfdmaRR";
     nrHelper->SetSchedulerTypeId(TypeId::LookupByName(schedulerType));
-    NS_LOG_INFO("Scheduler selecionado: " << schedulerType);
+    NS_LOG_INFO("Selected scheduler: " << schedulerType);
 
     // EPC helper
     Ptr<NrPointToPointEpcHelper> epcHelper = CreateObject<NrPointToPointEpcHelper>();

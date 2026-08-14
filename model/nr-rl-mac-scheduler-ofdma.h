@@ -19,45 +19,53 @@ namespace ns3
 
 /**
  * @ingroup scheduler
- * @brief Simple RL scheduler for RAN slicing allocation
+ * @brief OFDMA scheduler that enforces per-slice PRB quota bounds.
  *
- * @todo Simple examplanation here
+ * The historical class name contains "RL", but this scheduler does not
+ * embed a learning agent. It applies dedicated, minimum and maximum quotas
+ * supplied by static actions, the local feedback controller or E2 control.
  */
 class NrRLMacSchedulerOfdma : public NrMacSchedulerOfdmaRR
 {
   public:
     /**
-     * @brief GetTypeIdNrRLMacSchedulerOfdma
-     * @return The TypeId of the class
+     * @return The runtime type information for this scheduler.
      */
     static TypeId GetTypeId();
 
     /**
-     * @brief NrRLMacSchedulerOfdma constructor
+     * @brief Construct an empty quota-aware slicing scheduler.
      */
     NrRLMacSchedulerOfdma();
 
     /**
-     * @brief Deconstructor
+     * @brief Destructor.
      */
     ~NrRLMacSchedulerOfdma() override
     {
     }
 
     /**
-     * @brief Set the slicing parameters for a specific slice:
-     * 
-     *  - Dedicated physical resource block per slice
-     * 
-     *  - Minimum physical resource block per slice
-     * 
-     *  - Maximum physical resource block per slice
-     * 
-     * @param slicePRBQuota The slice PRB quota
+     * @brief Replace the current per-slice PRB quota constraints.
+     *
+     * Each quota identifies a slice by SST and provides dedicated, minimum
+     * and maximum PRB percentages. The decision source is external to this
+     * scheduler.
+     *
+     * @param quotas Complete quota set to install.
      */
-    void SetSlicingParameters(const std::vector<RicControlMessage::SlicePRBQuota>& quotas);
-    
-    void SetSliceUeMapping(uint32_t numSlices, const std::vector<std::vector<uint32_t>>& sliceUeRnti);
+    void SetSlicingParameters(
+        const std::vector<RicControlMessage::SlicePRBQuota>& quotas);
+
+    /**
+     * @brief Install the association between internal slices and UE RNTIs.
+     *
+     * @param numSlices Number of configured slices.
+     * @param sliceUeRnti UE RNTIs grouped by internal slice index.
+     */
+    void SetSliceUeMapping(
+        uint32_t numSlices,
+        const std::vector<std::vector<uint32_t>>& sliceUeRnti);
 
     /**
      * Trace signature for per-slice DL RBG allocation.
@@ -74,9 +82,9 @@ class NrRLMacSchedulerOfdma : public NrMacSchedulerOfdmaRR
     /**
      * @brief Create an UE representation aware of RAN slicing (SST lookup).
      *
-     * This overrides the RR default and instantiates NrMacSchedulerUeInfoRl
-     * so that, given an RNTI, the scheduler (and E2/KPM) can deterministically
-     * obtain the associated SST at runtime without scanning slice lists.
+     * This overrides the RR default and instantiates the historically
+     * named NrMacSchedulerUeInfoRl representation so the scheduler and
+     * E2/KPM paths can obtain the SST associated with an RNTI.
      */
     std::shared_ptr<NrMacSchedulerUeInfo> CreateUeRepresentation(
         const NrMacCschedSapProvider::CschedUeConfigReqParameters& params) const override;

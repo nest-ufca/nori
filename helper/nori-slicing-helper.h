@@ -15,9 +15,9 @@ namespace ns3
 /**
  * \brief Static helper to configure slice mapping (RNTI -> slice).
  *
- * This helper retrieves the UEs' RNTIs and configures the RL scheduler
- * (NrRLMacSchedulerOfdma) with the UE/slice mapping in a scheduled event
- * after the random access / RRC procedure has completed.
+ * This helper retrieves the UEs' RNTIs and configures the quota-aware
+ * slicing scheduler (historically named NrRLMacSchedulerOfdma) with the
+ * UE/slice mapping after random access and RRC connection establishment.
  */
 class NoriSlicingHelper
 {

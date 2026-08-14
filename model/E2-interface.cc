@@ -1124,7 +1124,9 @@ E2Interface::ControlMessageReceivedCallback(E2AP_PDU_t* sub_req_pdu)
 
         auto scheduler = gnbNetDev->GetScheduler(0);
         auto rlScheduler = DynamicCast<NrRLMacSchedulerOfdma>(scheduler);
-        NS_ABORT_MSG_UNLESS(rlScheduler, "Scheduler is not a RL OFDMA scheduler");
+        NS_ABORT_MSG_UNLESS(
+            rlScheduler,
+            "RAN slicing quota control requires NrRLMacSchedulerOfdma on BWP 0");
         rlScheduler->SetSlicingParameters(controlMessage->m_prbQuotas);
 
         break;

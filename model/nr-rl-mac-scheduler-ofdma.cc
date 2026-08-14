@@ -67,12 +67,7 @@ NrRLMacSchedulerOfdma::NrRLMacSchedulerOfdma()
     : NrMacSchedulerOfdmaRR()
 {
     NS_LOG_FUNCTION(this);
-    // Default values -> SHouldn't be hardcoded
     m_numberSlices = 0;
-    // m_minRbPercSlices = {70, 30};
-    // m_dedicatedRbPercSlices = {30, 30};
-    // m_maxRbPercSlices = {100, 100};
-    // m_sliceUeRnti = {{1, 2}, {3, 4}}; //TODO: add automatic population of this structure
 }
 
 std::shared_ptr<NrMacSchedulerUeInfo>
@@ -80,9 +75,8 @@ NrRLMacSchedulerOfdma::CreateUeRepresentation(
     const NrMacCschedSapProvider::CschedUeConfigReqParameters& params) const
 {
     NS_LOG_FUNCTION(this);
-    // Use RL-aware UE representation so we can answer RNTI->SST at runtime
-    // without scanning slice lists; the actual SST lookup is delegated to
-    // NoriSlicingHelper via NrMacSchedulerUeInfoRl.
+    // Use the slice-aware UE representation to obtain SST metadata
+    // through the centralized mapping maintained by NoriSlicingHelper.
     return std::make_shared<NrMacSchedulerUeInfoRl>(
         params.m_rnti,
         params.m_beamId,
@@ -103,7 +97,7 @@ NrRLMacSchedulerOfdma::SetSliceUeMapping(uint32_t numSlices,
     m_minRbPercSlices.resize(m_numberSlices, 0);
     m_maxRbPercSlices.resize(m_numberSlices, 100);
 
-    // Debug: logar mapeamento slice -> RNTIs
+    // Log the installed mapping from internal slices to UE RNTIs.
     for (uint32_t sliceIdx = 0; sliceIdx < m_numberSlices; ++sliceIdx)
     {
         std::ostringstream oss;

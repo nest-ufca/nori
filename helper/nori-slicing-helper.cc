@@ -74,8 +74,9 @@ NoriSlicingHelper::ConfigureSliceMapping(bool enableRanSlicing,
         return;
     }
 
-    NS_LOG_INFO("[NoriSlicingHelper::ConfigureSliceMapping] Starting slice configuration in the "
-                "RL scheduler...");
+    NS_LOG_INFO(
+        "[NoriSlicingHelper::ConfigureSliceMapping] Starting slice "
+        "configuration in the quota-aware slicing scheduler...");
 
     // Discover the actual RNTI of each UE (BWP 0)
     std::vector<uint32_t> ueRntis(ueDevs.GetN(), 0);

@@ -201,7 +201,10 @@ int main(int argc, char* argv[])
 
     CommandLine cmd;
     cmd.AddValue("configFile", "Path to the scenario configuration file", configFilePath);
-    cmd.AddValue("enableRanSlicing", "Enable RAN Slicing with RL scheduler", enableRanSlicing);
+    cmd.AddValue(
+        "enableRanSlicing",
+        "Enable RAN slicing with the quota-aware scheduler",
+        enableRanSlicing);
     cmd.AddValue("ipE2TermRic", "Ip address of the E2 termination", ipE2TermRic);
     cmd.Parse(argc, argv);
     // Load the scenario configuration after parsing CLI options so the path is portable.
@@ -423,10 +426,10 @@ int main(int argc, char* argv[])
     //nrHelper->SetGnbPhyAttribute("DciProcessingDelay", TimeValue(MicroSeconds(1.0)));
     //nrHelper->SetUePhyAttribute("DciProcessingDelay", TimeValue(MicroSeconds(1.0)));
     
-    // Configurar scheduler: RL com slicing ou RoundRobin padrão
+    // Select the quota-aware slicing scheduler or the baseline round-robin scheduler.
     std::string schedulerType = enableRanSlicing ? "ns3::NrRLMacSchedulerOfdma" : "ns3::NrMacSchedulerOfdmaRR";
     nrHelper->SetSchedulerTypeId(TypeId::LookupByName(schedulerType));
-    NS_LOG_INFO("Scheduler selecionado: " << schedulerType);
+    NS_LOG_INFO("Selected scheduler: " << schedulerType);
     
     // EPC helper
     Ptr<NrPointToPointEpcHelper> epcHelper = CreateObject<NrPointToPointEpcHelper>();
