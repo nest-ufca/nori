@@ -1327,22 +1327,84 @@ int main(int argc, char* argv[])
             });
     }
 
-    // Connect remoteHost to PGW via P2P link
+    // Connect the remote host to the PGW through a point-to-point link.
+    constexpr uint32_t pgwLinkEndpointIndex = 0;
+    constexpr uint32_t remoteHostLinkEndpointIndex = 1;
+    constexpr uint32_t primaryIpv4AddressIndex = 0;
+
+    const Ipv4Address coreLinkNetwork("1.0.0.0");
+    const Ipv4Mask coreLinkMask("255.255.255.252");
+
     PointToPointHelper p2ph;
-    p2ph.SetDeviceAttribute("DataRate", StringValue("10Gbps"));
-    p2ph.SetChannelAttribute("Delay", StringValue("1ms"));
-    NetDeviceContainer internetDevices = p2ph.Install(epcHelper->GetPgwNode(), remoteHostContainer.Get(0));
+    p2ph.SetDeviceAttribute(
+        "DataRate",
+        StringValue("10Gbps"));
+    p2ph.SetChannelAttribute(
+        "Delay",
+        StringValue("1ms"));
 
-    // Endereçamento do link PGW <-> remoteHost
+    NetDeviceContainer internetDevices =
+        p2ph.Install(
+            epcHelper->GetPgwNode(),
+            remoteHostContainer.Get(0));
+
     Ipv4AddressHelper ipv4h;
-    ipv4h.SetBase("1.0.0.0", "255.255.255.252");
-    Ipv4InterfaceContainer internetIpIfaces = ipv4h.Assign(internetDevices);
-    Ipv4Address remoteHostAddr = internetIpIfaces.GetAddress(1); // endereço do servidor
-    Ipv4Address pgwAddr = internetIpIfaces.GetAddress(0);
+    ipv4h.SetBase(
+        coreLinkNetwork,
+        coreLinkMask);
 
-    // epcHelper assigns IPv4 addresses to UEs
-    Ipv4InterfaceContainer ueIpIfaces = epcHelper->AssignUeIpv4Address(ueDevs);
-    // Em muitas versões: Ipv4InterfaceContainer ueIpIfaces = epcHelper->AssignUeIpv4Address(ueDevs);
+    const Ipv4InterfaceContainer internetIpIfaces =
+        ipv4h.Assign(internetDevices);
+
+    NS_ABORT_MSG_UNLESS(
+        internetIpIfaces.GetN() == 2,
+        "The PGW-to-remote-host link must expose two IPv4 interfaces");
+
+    const Ipv4Address pgwAddr =
+        internetIpIfaces.GetAddress(
+            pgwLinkEndpointIndex);
+
+    const Ipv4Address remoteHostAddr =
+        internetIpIfaces.GetAddress(
+            remoteHostLinkEndpointIndex);
+
+    const auto remoteHostInterface =
+        internetIpIfaces.Get(
+            remoteHostLinkEndpointIndex);
+
+    // Assign EPC-managed IPv4 addresses to the UE devices.
+    const Ipv4InterfaceContainer ueIpIfaces =
+        epcHelper->AssignUeIpv4Address(ueDevs);
+
+    NS_ABORT_MSG_UNLESS(
+        ueIpIfaces.GetN() == ueNodes.GetN(),
+        "The number of EPC-assigned UE interfaces does not match "
+        "the installed UE count");
+
+    NS_ABORT_MSG_UNLESS(
+        ueIpIfaces.GetN() > 0,
+        "At least one UE interface is required");
+
+    const auto firstUeInterface =
+        ueIpIfaces.Get(0);
+
+    NS_ABORT_MSG_UNLESS(
+        firstUeInterface.first->GetNAddresses(
+            firstUeInterface.second) >
+            primaryIpv4AddressIndex,
+        "The first UE interface has no primary IPv4 address");
+
+    const Ipv4InterfaceAddress firstUeAddress =
+        firstUeInterface.first->GetAddress(
+            firstUeInterface.second,
+            primaryIpv4AddressIndex);
+
+    const Ipv4Mask ueNetworkMask =
+        firstUeAddress.GetMask();
+
+    const Ipv4Address ueNetworkAddress =
+        firstUeAddress.GetLocal().CombineMask(
+            ueNetworkMask);
 
     // Map each EPC-assigned UE address to its scenario index.
     std::map<Ipv4Address, uint32_t> ueIpToIndex;
@@ -1350,26 +1412,67 @@ int main(int argc, char* argv[])
     NS_LOG_INFO("*** EPC-assigned addresses ***");
     NS_LOG_INFO("remoteHost (server): " << remoteHostAddr);
     NS_LOG_INFO("PGW: " << pgwAddr);
-    for (uint32_t i = 0; i < ueIpIfaces.GetN(); ++i)
+    NS_LOG_INFO(
+        "UE network: "
+        << ueNetworkAddress
+        << "/"
+        << ueNetworkMask.GetPrefixLength());
+
+    for (uint32_t i = 0;
+         i < ueIpIfaces.GetN();
+         ++i)
     {
-        Ipv4Address addr = ueIpIfaces.GetAddress(i);
-        ueIpToIndex[addr] = i;
-        NS_LOG_INFO("UE[" << i << "] IP (via EPC): " << addr);
+        const Ipv4Address address =
+            ueIpIfaces.GetAddress(i);
+
+        ueIpToIndex[address] = i;
+
+        NS_LOG_INFO(
+            "UE["
+            << i
+            << "] IP (via EPC): "
+            << address);
     }
 
-    // Static route on remoteHost towards UE network via PGW
+    // Route UE traffic through the actual PGW address and host interface.
     Ipv4StaticRoutingHelper ipv4RoutingHelper;
-    Ptr<Ipv4> remoteIpv4 = remoteHostContainer.Get(0)->GetObject<Ipv4>();
-    Ptr<Ipv4StaticRouting> remoteStatic = ipv4RoutingHelper.GetStaticRouting(remoteIpv4);
-    remoteStatic->AddNetworkRouteTo(Ipv4Address("7.0.0.0"), Ipv4Mask("255.0.0.0"), Ipv4Address("1.0.0.1"), 1);
 
-    // Default route on UEs towards EPC gateway
-    for (uint32_t i = 0; i < ueNodes.GetN(); ++i)
+    Ptr<Ipv4StaticRouting> remoteStatic =
+        ipv4RoutingHelper.GetStaticRouting(
+            remoteHostInterface.first);
+
+    remoteStatic->AddNetworkRouteTo(
+        ueNetworkAddress,
+        ueNetworkMask,
+        pgwAddr,
+        remoteHostInterface.second);
+
+    // Use each EPC-assigned interface for the corresponding UE route.
+    const Ipv4Address ueDefaultGatewayAddress =
+        epcHelper->GetUeDefaultGatewayAddress();
+
+    for (uint32_t i = 0;
+         i < ueIpIfaces.GetN();
+         ++i)
     {
-        Ptr<Ipv4> ueIpv4 = ueNodes.Get(i)->GetObject<Ipv4>();
-        Ptr<Ipv4StaticRouting> ueStatic = ipv4RoutingHelper.GetStaticRouting(ueIpv4);
-        ueStatic->SetDefaultRoute(epcHelper->GetUeDefaultGatewayAddress(), 1);
-        NS_LOG_INFO("UE[" << i << "] default route: GW=" << epcHelper->GetUeDefaultGatewayAddress() << " via interface 1");
+        const auto ueInterface =
+            ueIpIfaces.Get(i);
+
+        Ptr<Ipv4StaticRouting> ueStatic =
+            ipv4RoutingHelper.GetStaticRouting(
+                ueInterface.first);
+
+        ueStatic->SetDefaultRoute(
+            ueDefaultGatewayAddress,
+            ueInterface.second);
+
+        NS_LOG_INFO(
+            "UE["
+            << i
+            << "] default route: GW="
+            << ueDefaultGatewayAddress
+            << " via interface "
+            << ueInterface.second);
     }
 
     // Application data uses one deterministic port range per direction.
