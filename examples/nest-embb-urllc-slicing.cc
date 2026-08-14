@@ -2031,11 +2031,21 @@ int main(int argc, char* argv[])
         classifier,
         "Could not obtain the IPv4 FlowMonitor classifier");
 
+    /**
+     * Aggregate application-flow measurements for one traffic label.
+     *
+     * Throughput remains a per-flow measurement and is accumulated so both
+     * its sum and arithmetic per-flow mean can be reported explicitly.
+     * Delay sums and received-packet counts are accumulated independently
+     * to calculate packet-weighted delay.
+     */
     struct ApplicationFlowAggregate
     {
-        double totalThroughputMbps{0.0};
-        double totalDelayMs{0.0};
+        double summedThroughputMbps{0.0};
+        double totalDelaySeconds{0.0};
+        uint64_t totalRxPackets{0};
         uint32_t flowCount{0};
+        uint32_t receivingFlowCount{0};
     };
 
     std::map<std::string, ApplicationFlowAggregate>
@@ -2227,11 +2237,14 @@ int main(int argc, char* argv[])
         ApplicationFlowAggregate& trafficAggregate =
             trafficAggregates[trafficType];
 
-        trafficAggregate.totalThroughputMbps +=
+        trafficAggregate.summedThroughputMbps +=
             throughputMbps;
 
-        trafficAggregate.totalDelayMs +=
-            delayMs;
+        trafficAggregate.totalDelaySeconds +=
+            stats.delaySum.GetSeconds();
+
+        trafficAggregate.totalRxPackets +=
+            stats.rxPackets;
 
         trafficAggregate.flowCount++;
 
@@ -2240,13 +2253,22 @@ int main(int argc, char* argv[])
                 ? downlinkAggregates[trafficType]
                 : uplinkAggregates[trafficType];
 
-        directionAggregate.totalThroughputMbps +=
+        directionAggregate.summedThroughputMbps +=
             throughputMbps;
 
-        directionAggregate.totalDelayMs +=
-            delayMs;
+        directionAggregate.totalDelaySeconds +=
+            stats.delaySum.GetSeconds();
+
+        directionAggregate.totalRxPackets +=
+            stats.rxPackets;
 
         directionAggregate.flowCount++;
+
+        if (stats.rxPackets > 0)
+        {
+            trafficAggregate.receivingFlowCount++;
+            directionAggregate.receivingFlowCount++;
+        }
 
         std::cout
             << "Flow " << flowId
@@ -2295,17 +2317,42 @@ int main(int argc, char* argv[])
             const std::string& label,
             const ApplicationFlowAggregate& aggregate)
     {
+        NS_ABORT_MSG_UNLESS(
+            aggregate.flowCount > 0,
+            "Cannot print an empty application-flow aggregate");
+
+        const double meanPerFlowThroughputMbps =
+            aggregate.summedThroughputMbps /
+            aggregate.flowCount;
+
         std::cout
-            << "Average " << label
+            << "Traffic " << label
             << " (" << aggregate.flowCount
-            << " flows) - Throughput: "
-            << aggregate.totalThroughputMbps /
-                aggregate.flowCount
-            << " Mbps; Delay: "
-            << aggregate.totalDelayMs /
-                aggregate.flowCount
-            << " ms"
-            << std::endl;
+            << " flows, "
+            << aggregate.receivingFlowCount
+            << " receiving) - Summed throughput: "
+            << aggregate.summedThroughputMbps
+            << " Mbps; Mean per-flow throughput: "
+            << meanPerFlowThroughputMbps
+            << " Mbps; Packet-weighted delay: ";
+
+        if (aggregate.totalRxPackets > 0)
+        {
+            const double packetWeightedDelayMs =
+                aggregate.totalDelaySeconds /
+                aggregate.totalRxPackets *
+                1e3;
+
+            std::cout
+                << packetWeightedDelayMs
+                << " ms";
+        }
+        else
+        {
+            std::cout << "unavailable";
+        }
+
+        std::cout << std::endl;
     };
 
     std::vector<std::string> summarizedTrafficTypes;
