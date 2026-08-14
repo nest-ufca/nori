@@ -1544,6 +1544,46 @@ E2Interface::BuildRicIndicationMessageDu(std::string plmId, uint16_t nrCellId)
                                               false,
                                               false);
 
+    constexpr uint8_t primaryBwpIndex = 0;
+
+    const auto gnbDevice =
+        DynamicCast<NrGnbNetDevice>(m_netDev);
+
+    NS_ABORT_MSG_IF(
+        !gnbDevice,
+        "KPM DU reporting requires an NrGnbNetDevice");
+
+    const auto primaryPhy =
+        gnbDevice->GetPhy(primaryBwpIndex);
+
+    NS_ABORT_MSG_IF(
+        !primaryPhy,
+        "KPM DU reporting requires a PHY on the primary BWP");
+
+    const uint32_t availablePrbs =
+        primaryPhy->GetRbNum();
+
+    const uint32_t symbolsPerSlot =
+        primaryPhy->GetSymbolsPerSlot();
+
+    const Time slotPeriod =
+        primaryPhy->GetSlotPeriod();
+
+    const auto slotPeriodNanoseconds =
+        slotPeriod.GetNanoSeconds();
+
+    NS_ABORT_MSG_IF(
+        availablePrbs == 0,
+        "KPM DU reporting requires a nonzero number of PRBs");
+
+    NS_ABORT_MSG_IF(
+        symbolsPerSlot == 0,
+        "KPM DU reporting requires a nonzero number of symbols per slot");
+
+    NS_ABORT_MSG_IF(
+        slotPeriodNanoseconds <= 0,
+        "KPM DU reporting requires a positive slot period");
+
     ObjectMapValue ueManager;
     m_rrc->GetAttribute("UeMap", ueManager);
 
@@ -1617,27 +1657,32 @@ E2Interface::BuildRicIndicationMessageDu(std::string plmId, uint16_t nrCellId)
         double macNumberOfSymbols =
             m_e2DuCalculator->GetMacNumberOfSymbolsUeSpecific(rnti, m_cellId);
 
-        auto slotPeriod = DynamicCast<NrGnbNetDevice>(m_netDev)->GetPhy(0)->GetSlotPeriod();
-
-        ObjectMapValue ccMapObject;
-        DynamicCast<NrGnbNetDevice>(m_netDev)->GetAttribute("BandwidthPartMap", ccMapObject);
-
-        // Denominator = (Periodicity of the report time window in ms*number of TTIs per ms*14)
+        // Normalize scheduled symbols using the runtime slot
+        // geometry of the primary BWP.
         Time reportingWindow =
             Simulator::Now() - m_e2DuCalculator->GetLastResetTime(rnti, m_cellId);
-        double denominatorPrb =
-            std::ceil(reportingWindow.GetNanoSeconds() / slotPeriod.GetNanoSeconds()) * 14;
+        const double denominatorPrb =
+            std::ceil(
+                static_cast<double>(
+                    reportingWindow.GetNanoSeconds()) /
+                static_cast<double>(
+                    slotPeriodNanoseconds)) *
+            static_cast<double>(
+                symbolsPerSlot);
 
         NS_LOG_DEBUG("macNumberOfSymbols " << macNumberOfSymbols << " denominatorPrb "
                                            << denominatorPrb);
 
-        // Average Number of PRBs allocated for the UE = (NR/DR)*139 (where 139 is the total number
-        // of PRBs available per NR cell, given numerology 2 with 60 kHz SCS)
+        // Convert the scheduled-symbol share to PRBs using the
+        // runtime geometry of the primary BWP.
         double macPrb = 0;
         if (denominatorPrb != 0)
         {
-            macPrb = macNumberOfSymbols / denominatorPrb *
-                     139; // TODO fix this for different numerologies
+            macPrb =
+                macNumberOfSymbols /
+                denominatorPrb *
+                static_cast<double>(
+                    availablePrbs);
         }
         macPrbsCellSpecific += macPrb;
 
@@ -1791,10 +1836,8 @@ E2Interface::BuildRicIndicationMessageDu(std::string plmId, uint16_t nrCellId)
     m_drbThrDlPdcpBasedComputationUeid.clear();
     m_drbThrDlUeid.clear();
 
-    // Denominator = (Total number of rows (TTIs) within a given time window* 14)
-    // Numerator = (Sum of number of symbols across all rows (TTIs) group by cell ID within a given
-    // time window) * 139 Average Number of PRBs allocated for the UE = (NR/DR) (where 139 is the
-    // total number of PRBs available per NR cell, given numerology 2 with 60 kHz SCS)
+    // Sum the UE-average PRB allocations derived from the
+    // runtime geometry of the primary BWP.
     double prbUtilizationDl = macPrbsCellSpecific;
 
     NS_LOG_INFO(
@@ -1816,12 +1859,24 @@ E2Interface::BuildRicIndicationMessageDu(std::string plmId, uint16_t nrCellId)
         << macSinrBin5CellSpecific << " macSinrBin6CellSpecific " << macSinrBin6CellSpecific
         << " macSinrBin7CellSpecific " << macSinrBin7CellSpecific);
 
-    long dlAvailablePrbs = 139; // TODO this is for the current configuration, make it configurable
-    long ulAvailablePrbs = 139; // TODO this is for the current configuration, make it configurable
+    const long dlAvailablePrbs =
+        static_cast<long>(availablePrbs);
+    // The same primary-BWP geometry is reported for both
+    // directions of the paired carrier.
+    const long ulAvailablePrbs =
+        static_cast<long>(availablePrbs);
     long qci = 1;
-    long dlPrbUsage = std::min((long)(prbUtilizationDl / dlAvailablePrbs * 100),
-                               (long)100); // percentage of used PRBs
-    long ulPrbUsage = 0;                   // TODO for future implementation
+    const long dlPrbUsage =
+        std::min(
+            static_cast<long>(
+                prbUtilizationDl /
+                static_cast<double>(
+                    dlAvailablePrbs) *
+                100.0),
+            100L);
+    const long ulPrbUsage = 0;
+    // Uplink PRB utilization remains unavailable in this
+    // legacy DU measurement container.
 
     if (!indicationMessageHelper->IsOffline())
     {
