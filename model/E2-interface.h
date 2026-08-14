@@ -135,6 +135,16 @@ class E2Interface : public Object
         const std::vector<KpmGnbDuUeContext>& contexts);
 
     /**
+     * Configure the three-octet TBCD PLMN identity used in KPM reports.
+     *
+     * The value must be the same encoded PLMN identity advertised by
+     * the E2 termination during E2 Setup.
+     *
+     * @param plmId three-octet TBCD PLMN identity
+     */
+    void SetPlmnId(const std::string& plmId);
+
+    /**
      * @brief Report the number of TX PDU calls
      * @param rnti the current Radio network temporary identifier
      * @param lcid the current cell identifier
@@ -281,6 +291,7 @@ class E2Interface : public Object
     std::map<uint64_t, std::map<uint16_t, long double>> m_l3sinrMap; //<! L3 SINR map
 
     Ptr<E2Termination> m_e2term;                          //<! E2 termination object
+    std::string m_plmId;                                  //<! Three-octet TBCD PLMN
     Ptr<NetDevice> m_netDev;                              //<! Net device of the nodeB
     std::map<uint32_t, uint32_t> m_txPDU;                 //<! Number of TX PDU calls
     std::map<uint32_t, uint64_t> m_txPDUBytes;            //<! Number of TX PDU in bytes

@@ -113,6 +113,18 @@ E2Interface::GetTypeId()
 }
 
 void
+E2Interface::SetPlmnId(const std::string& plmId)
+{
+    NS_LOG_FUNCTION(this);
+
+    NS_ABORT_MSG_UNLESS(
+        plmId.size() == 3,
+        "KPM PLMN identity must contain exactly three TBCD octets");
+
+    m_plmId = plmId;
+}
+
+void
 E2Interface::RegisterNewSinrReadingCallback([[maybe_unused]] std::string path,
                                             uint16_t cellId,
                                             uint16_t rnti,
@@ -374,15 +386,18 @@ E2Interface::BuildAndSendReportMessage()
     // eNB/gNB needs to have an E2 termination
     NS_ASSERT(e2Term != nullptr);
 
-    // nodeB PLMN ID
-    std::string plmId = "111";
+    NS_ABORT_MSG_UNLESS(
+        m_plmId.size() == 3,
+        "KPM reporting requires the configured three-octet PLMN identity");
+
+    const std::string& plmId = m_plmId;
 
     // Check if the nodeB is a gNB or eNB
     auto gnbNode = DynamicCast<NrGnbNetDevice>(m_netDev);
     NS_ASSERT(gnbNode);
     // node cell ID
     m_cellId = gnbNode->GetCellId();
-    NS_ASSERT(plmId == "111" && m_cellId != 0);
+    NS_ASSERT(m_cellId != 0);
     std::string gnbId = std::to_string(m_cellId);
     NS_LOG_DEBUG("PLMN ID: " << plmId << " gNB cell ID: " << gnbId);
     bool cuUp = true;
@@ -397,6 +412,8 @@ E2Interface::BuildAndSendReportMessage()
         if (header != nullptr && cuUpMsg != nullptr)
         {
             NS_LOG_DEBUG("Send NR CU-UP");
+            const uint32_t sequenceNumber =
+                ++m_kpmIndicationSequenceNumber;
             auto pdu_cuup_ue = new E2AP_PDU;
             encoding::generate_e2apv1_indication_request_parameterized(
                 pdu_cuup_ue,
@@ -404,7 +421,7 @@ E2Interface::BuildAndSendReportMessage()
                 params.instanceId,
                 params.ranFuncionId,
                 params.actionId,
-                1,                           // TODO sequence number
+                sequenceNumber,
                 (uint8_t*)header->m_buffer,  // buffer containing the encoded header
                 header->m_size,              // size of the encoded header
                 (uint8_t*)cuUpMsg->m_buffer, // buffer containing the encoded message
@@ -425,6 +442,8 @@ E2Interface::BuildAndSendReportMessage()
         if (header != nullptr && cuCpMsg != nullptr)
         {
             NS_LOG_DEBUG("Send NR CU-CP");
+            const uint32_t sequenceNumber =
+                ++m_kpmIndicationSequenceNumber;
             auto pdu_cucp_ue = new E2AP_PDU;
             encoding::generate_e2apv1_indication_request_parameterized(
                 pdu_cucp_ue,
@@ -432,7 +451,7 @@ E2Interface::BuildAndSendReportMessage()
                 params.instanceId,
                 params.ranFuncionId,
                 params.actionId,
-                1,                           // TODO sequence number
+                sequenceNumber,
                 (uint8_t*)header->m_buffer,  // buffer containing the encoded header
                 header->m_size,              // size of the encoded header
                 (uint8_t*)cuCpMsg->m_buffer, // buffer containing the encoded message
@@ -453,6 +472,8 @@ E2Interface::BuildAndSendReportMessage()
         if (header != nullptr && duMsg != nullptr)
         {
             NS_LOG_DEBUG("Send NR DU");
+            const uint32_t sequenceNumber =
+                ++m_kpmIndicationSequenceNumber;
             auto pdu_du_ue = new E2AP_PDU;
             encoding::generate_e2apv1_indication_request_parameterized(
                 pdu_du_ue,
@@ -460,7 +481,7 @@ E2Interface::BuildAndSendReportMessage()
                 params.instanceId,
                 params.ranFuncionId,
                 params.actionId,
-                1,                          // TODO sequence number
+                sequenceNumber,
                 (uint8_t*)header->m_buffer, // buffer containing the encoded header
                 header->m_size,             // size of the encoded header
                 (uint8_t*)duMsg->m_buffer,  // buffer containing the encoded message
@@ -896,8 +917,6 @@ E2Interface::FunctionServiceSubscriptionCallback(E2AP_PDU_t* sub_req_pdu)
         m_kpmMatchingGnbCuUeF1apIds.push_back(matchingUe.gnbCuUeF1apId);
     }
 
-    m_kpmIndicationSequenceNumber = 0;
-
 #endif
 
     E2Termination::RicSubscriptionRequest_rval_s params = m_e2term->ProcessRicSubscriptionRequest(sub_req_pdu);
@@ -908,6 +927,7 @@ E2Interface::FunctionServiceSubscriptionCallback(E2AP_PDU_t* sub_req_pdu)
 
 
     m_kpmSubscriptionParams = params;
+    m_kpmIndicationSequenceNumber = 0;
     m_e2Periodicity = reportingPeriodSeconds;
     m_kpmSubscriptionActive.store(true);
 

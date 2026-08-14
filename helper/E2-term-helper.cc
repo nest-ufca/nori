@@ -162,6 +162,8 @@ E2TermHelper::InstallE2Term(Ptr<NetDevice> NetDevice)
     const std::string encodedPlmnId =
         EncodePlmnIdentity(m_mcc, m_mnc);
 
+    e2Messages->SetPlmnId(encodedPlmnId);
+
     // node cell ID
     uint16_t cellId{0};
     // Client local port
