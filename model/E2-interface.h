@@ -6,6 +6,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "E2-report.h"
@@ -115,6 +116,15 @@ class E2Interface : public Object
     void StartKpmReporting();
 
     /**
+     * Snapshot cumulative PDCP and RLC counters when legacy KPM reporting
+     * starts.
+     *
+     * The first indication can then represent exactly one reporting period
+     * instead of including traffic collected before the subscription.
+     */
+    void SnapshotLegacyBearerAccountingBaselines();
+
+    /**
      * Cancel the pending periodic KPM report inside the simulator thread.
      */
     void StopKpmReporting();
@@ -172,7 +182,10 @@ class E2Interface : public Object
     Ptr<NoriE2Report> GetE2DuCalculator();
 
     
-    void MLSliceInterface(double macPrb, uint64_t imsi);
+    void MLSliceInterface(double macPrb,
+                          uint64_t imsi,
+                          double dlThroughput,
+                          double ulThroughput);
 
   private:
     /**
@@ -298,20 +311,31 @@ class E2Interface : public Object
     Ptr<NrBearerStatsCalculator> m_e2PdcpStatsCalculator; //<! E2 PDCP stats calculator
     Ptr<NrBearerStatsCalculator> m_e2RlcStatsCalculator;  //<! E2 RLC stats calculator
     Ptr<NoriE2Report> m_e2DuCalculator;                   //<! E2 DU calculator
-    uint16_t m_cellId{0};                                 //<! Cell ID
-    double m_cellTxDlPackets = 0;                         //<! Number of DL packets
-    //double m_cellTxBytes = 0;                             //<! Number of DL bytes
-    std::map <uint64_t, double> m_cellTxBytes;                             //<! Number of DL bytes
-    
-    double m_cellRxBytes = 0;                             //<! Number of UL bytes
-    uint64_t m_startTime = 0;                             //<! Start time
-    std::map<uint64_t, uint32_t>
-        m_drbThrDlPdcpBasedComputationUeid;      //<! DRB throughput DL PDCP in UE IMSI
-    std::map<uint64_t, uint32_t> m_drbThrDlUeid; //<! DRB throughput DL in UE ID
-    std::string m_duFileName;                    //<! DU file name
+    using BearerCounterKey =
+        std::pair<uint64_t, uint8_t>;
+
+    uint16_t m_cellId{0};                    //<! Cell ID
+    uint64_t m_startTime{0};                 //<! Start time
+
+    std::map<BearerCounterKey, uint32_t>
+        m_previousPdcpDlTxPackets;
+    std::map<BearerCounterKey, uint64_t>
+        m_previousPdcpDlTxBytes;
+    std::map<BearerCounterKey, uint64_t>
+        m_previousPdcpDlRxBytes;
+    std::map<BearerCounterKey, uint64_t>
+        m_previousPdcpUlTxBytes;
+    std::map<BearerCounterKey, uint64_t>
+        m_previousRlcDlTxBytes;
+
+    std::map<uint64_t, double>
+        m_drbThrDlPdcpBasedComputationUeid;
+    std::map<uint64_t, double>
+        m_drbThrUlPdcpBasedComputationUeid;
+    std::map<uint64_t, double>
+        m_drbThrDlUeid;
+
+    std::string m_duFileName;
     double macPrb;
-    std::map<uint64_t, double> m_previousDlTxData;
-    std::map<uint64_t, double> m_previousUlTxData;
-    std::map<uint64_t, double> m_previousTime;
 };
 } // namespace ns3

@@ -24,6 +24,7 @@
 #include "ns3/nr-gnb-mac.h"
 #include "ns3/nr-gnb-net-device.h"
 #include "ns3/nr-gnb-rrc.h"
+#include "ns3/nr-radio-bearer-info.h"
 #include "ns3/nr-mac-sched-sap.h"
 #include "ns3/nr-rl-mac-scheduler-ofdma.h"
 #include "ns3/nr-rlc-am.h"
@@ -67,6 +68,26 @@ CurrentUnixTimeNs()
     }
 
     return static_cast<uint64_t>(unixNanoseconds);
+}
+
+/**
+ * Return the increment of a cumulative counter and advance its baseline.
+ *
+ * A smaller current value indicates that the underlying statistics
+ * calculator was reset. In that case, the current value is the complete
+ * increment since the reset.
+ */
+template <typename Counter>
+Counter
+ConsumeCounterDelta(Counter current, Counter& previous)
+{
+    const Counter delta =
+        current >= previous
+            ? current - previous
+            : current;
+
+    previous = current;
+    return delta;
 }
 }
 
@@ -500,6 +521,127 @@ E2Interface::BuildAndSendReportMessage()
 }
 
 /**
+ * Snapshot cumulative bearer counters at the beginning of a legacy KPM
+ * reporting session.
+ *
+ * This method runs in the simulator thread. Clearing and repopulating the
+ * maps also removes stale bearer keys left by an earlier subscription.
+ */
+void
+E2Interface::SnapshotLegacyBearerAccountingBaselines()
+{
+    NS_LOG_FUNCTION(this);
+
+    NS_ABORT_MSG_IF(
+        !m_e2PdcpStatsCalculator,
+        "Legacy KPM bearer accounting requires a PDCP statistics calculator");
+
+    NS_ABORT_MSG_IF(
+        !m_e2RlcStatsCalculator,
+        "Legacy KPM bearer accounting requires an RLC statistics calculator");
+
+    m_previousPdcpDlTxPackets.clear();
+    m_previousPdcpDlTxBytes.clear();
+    m_previousPdcpDlRxBytes.clear();
+    m_previousPdcpUlTxBytes.clear();
+    m_previousRlcDlTxBytes.clear();
+
+    // Interval throughputs remain unavailable until the first full window.
+    m_drbThrDlPdcpBasedComputationUeid.clear();
+    m_drbThrUlPdcpBasedComputationUeid.clear();
+    m_drbThrDlUeid.clear();
+
+    ObjectMapValue ueManager;
+    m_rrc->GetAttribute("UeMap", ueManager);
+
+    uint32_t bearerCount = 0;
+
+    for (auto ueObject = ueManager.Begin();
+         ueObject != ueManager.End();
+         ++ueObject)
+    {
+        Ptr<NrUeManager> ue =
+            DynamicCast<NrUeManager>(ueObject->second);
+
+        NS_ABORT_MSG_IF(
+            !ue,
+            "Invalid UE manager while initializing legacy KPM accounting");
+
+        const uint64_t imsi = ue->GetImsi();
+
+        ObjectMapValue drbMap;
+        ue->GetAttribute("DataRadioBearerMap", drbMap);
+
+        NS_ABORT_MSG_IF(
+            drbMap.GetN() == 0,
+            "Legacy KPM accounting requires a data radio bearer for IMSI "
+                << imsi);
+
+        for (auto drb = drbMap.Begin();
+             drb != drbMap.End();
+             ++drb)
+        {
+            Ptr<NrDataRadioBearerInfo> bearerInfo =
+                drb->second->GetObject<NrDataRadioBearerInfo>();
+
+            NS_ABORT_MSG_IF(
+                !bearerInfo,
+                "Invalid data radio bearer for IMSI "
+                    << imsi);
+
+            const uint8_t lcid =
+                bearerInfo->m_logicalChannelIdentity;
+
+            const BearerCounterKey counterKey =
+                std::make_pair(imsi, lcid);
+
+            m_previousPdcpDlTxPackets[counterKey] =
+                m_e2PdcpStatsCalculator->GetDlTxPackets(
+                    imsi,
+                    lcid);
+
+            m_previousPdcpDlTxBytes[counterKey] =
+                m_e2PdcpStatsCalculator->GetDlTxData(
+                    imsi,
+                    lcid);
+
+            m_previousPdcpDlRxBytes[counterKey] =
+                m_e2PdcpStatsCalculator->GetDlRxData(
+                    imsi,
+                    lcid);
+
+            m_previousPdcpUlTxBytes[counterKey] =
+                m_e2PdcpStatsCalculator->GetUlTxData(
+                    imsi,
+                    lcid);
+
+            m_previousRlcDlTxBytes[counterKey] =
+                m_e2RlcStatsCalculator->GetDlTxData(
+                    imsi,
+                    lcid);
+
+            ++bearerCount;
+
+            NS_LOG_DEBUG(
+                "[KPM] Legacy counter baseline: IMSI="
+                    << imsi
+                    << ", LCID="
+                    << static_cast<uint32_t>(lcid)
+                    << ", PDCP-DL-TX-bytes="
+                    << m_previousPdcpDlTxBytes[counterKey]
+                    << ", RLC-DL-TX-bytes="
+                    << m_previousRlcDlTxBytes[counterKey]);
+        }
+    }
+
+    NS_LOG_INFO(
+        "[KPM] Legacy bearer accounting baselines initialized: UEs="
+            << ueManager.GetN()
+            << ", bearers="
+            << bearerCount);
+}
+
+/**
  * Start or restart periodic KPM reporting inside the simulator thread.
  */
 void
@@ -521,6 +663,18 @@ E2Interface::StartKpmReporting()
     }
 
     NS_LOG_INFO("[KPM] Starting periodic reporting at t=" << Simulator::Now().GetSeconds() << "s");
+
+    bool usesLegacyReportBuilder = true;
+
+#ifdef NORI_ENABLE_KPM_V3_CODEC
+    usesLegacyReportBuilder =
+        m_kpmReportStyle != 5;
+#endif
+
+    if (usesLegacyReportBuilder)
+    {
+        SnapshotLegacyBearerAccountingBaselines();
+    }
 
     // Discard bytes collected before the subscription became active. The
     // first indication must represent one complete reporting interval.
@@ -1193,9 +1347,6 @@ E2Interface::BuildRicIndicationMessageCuUp(std::string plmId)
     // rx bytes in downlink
     double cellDlRxVolume = 0;
 
-    // sum of the per-user average latency
-    double perUserAverageLatencySum = 0;
-
     std::unordered_map<uint64_t, std::string> uePmString{};
 
     for (auto ueObject = ueManager.Begin(); ueObject != ueManager.End(); ueObject++)
@@ -1205,109 +1356,159 @@ E2Interface::BuildRicIndicationMessageCuUp(std::string plmId)
 
         std::string ueImsiComplete = GetImsiString(imsi);
 
-        /**
-         * NOTE: save current values in a temporary variable which will be used
-         * to update the frame stats. Ex:
-         * flow [1]: 1000 bytes -> in this frame window using GetDlTxData()
-         * totalFlow of the entire simulation += 1000 bytes
-         * flow [2]: 2000 bytes -> in this frame window, where:
-         * flow [2] = actual frame  - (flow [1])
-         * totalFlow = 2000 bytes
-         *
-         * So, we can generalize this to:
-         * flow [n] = actual frame - (totalFlow)
-         */
-        // m_e2PdcpStatsCalculator->ResetResults();
-
-        // double rxDlPackets = m_e2PdcpStatsCalculator->GetDlRxPackets(imsi, 4); // LCID 3 is used
-        // for data
-        // Get the tx packets in DL flow
-        long txDlPackets = m_e2PdcpStatsCalculator->GetDlTxPackets(imsi, 4) -
-                           m_cellTxDlPackets; // LCID 3 is used for data
-        m_cellTxDlPackets += txDlPackets;
-        // Get the tx kbits
-        double actualTotalTxBytes = m_e2PdcpStatsCalculator->GetDlTxData(imsi, 4) * (8 / 1e3);
-        if (m_cellTxBytes.find(imsi) == m_cellTxBytes.end())
-        {
-            m_cellTxBytes.insert(std::make_pair(imsi, 0));
-        }
-        double txBytes = (actualTotalTxBytes - m_cellTxBytes[imsi]); // in kbit, not byte
-
-        NS_LOG_DEBUG("Actual value of TX bytes: " << (actualTotalTxBytes) << " - " << m_cellTxBytes[imsi]
-                                                  << ", Result = " << txBytes);
-        // Save the current value to validate the tx bits in this frame window
-        m_cellTxBytes[imsi] += txBytes;
-
-        // Get the rx kbit
-        double actualTotalRxBytes = m_e2PdcpStatsCalculator->GetDlRxData(imsi, 4) * (8 / 1e3);
-        double rxBytes = (actualTotalRxBytes - m_cellRxBytes); // in kbit, not byte
-        NS_LOG_DEBUG("Actual value of RX bytes: " << (actualTotalRxBytes) << " - " << m_cellRxBytes
-                                                  << ", Result = " << rxBytes);
-        // Save the current value to validate the rx bits in this frame window
-        m_cellRxBytes += rxBytes;
-
-        // Cell volume metrics
-        cellDlTxVolume += txBytes;
-        cellDlRxVolume += rxBytes;
-
-        long txPdcpPduNrRlc = 0;
-        double txPdcpPduBytesNrRlc = 0;
-
-        // Get std::map<uint8_t, ns3::Ptr<ns3::NrDataRadioBearerInfo>> ns3::NrUeManager::m_drbMap
         ObjectMapValue drbMap;
         ue->GetAttribute("DataRadioBearerMap", drbMap);
-        auto rnti = ue->GetRnti();
-        // All the drbs report in the same callback function, all the PDU information is being
-        // summed in the ReportTxPDU.
-        // Tx PDUs in the reporting period, only get in this time window
-        // and then reset it
-        txPdcpPduNrRlc += m_txPDU[rnti];
-        txPdcpPduBytesNrRlc += m_txPDUBytes[rnti];
-        // Reset counting in the frame time
+
+        NS_ABORT_MSG_IF(
+            drbMap.GetN() == 0,
+            "CU-UP accounting requires at least one data radio bearer for IMSI "
+                << imsi);
+
+        uint64_t txDlPackets = 0;
+        uint64_t pdcpDlTxBytes = 0;
+        uint64_t pdcpDlRxBytes = 0;
+        uint64_t pdcpUlTxBytes = 0;
+        uint64_t rlcDlTxBytes = 0;
+
+        for (auto drb = drbMap.Begin();
+             drb != drbMap.End();
+             ++drb)
+        {
+            Ptr<NrDataRadioBearerInfo> bearerInfo =
+                drb->second->GetObject<NrDataRadioBearerInfo>();
+
+            NS_ABORT_MSG_IF(
+                !bearerInfo,
+                "Invalid data radio bearer for IMSI "
+                    << imsi);
+
+            const uint8_t lcid =
+                bearerInfo->m_logicalChannelIdentity;
+
+            const BearerCounterKey counterKey =
+                std::make_pair(imsi, lcid);
+
+            txDlPackets +=
+                ConsumeCounterDelta(
+                    m_e2PdcpStatsCalculator->GetDlTxPackets(
+                        imsi,
+                        lcid),
+                    m_previousPdcpDlTxPackets[counterKey]);
+
+            pdcpDlTxBytes +=
+                ConsumeCounterDelta(
+                    m_e2PdcpStatsCalculator->GetDlTxData(
+                        imsi,
+                        lcid),
+                    m_previousPdcpDlTxBytes[counterKey]);
+
+            pdcpDlRxBytes +=
+                ConsumeCounterDelta(
+                    m_e2PdcpStatsCalculator->GetDlRxData(
+                        imsi,
+                        lcid),
+                    m_previousPdcpDlRxBytes[counterKey]);
+
+            pdcpUlTxBytes +=
+                ConsumeCounterDelta(
+                    m_e2PdcpStatsCalculator->GetUlTxData(
+                        imsi,
+                        lcid),
+                    m_previousPdcpUlTxBytes[counterKey]);
+
+            rlcDlTxBytes +=
+                ConsumeCounterDelta(
+                    m_e2RlcStatsCalculator->GetDlTxData(
+                        imsi,
+                        lcid),
+                    m_previousRlcDlTxBytes[counterKey]);
+        }
+
+        const double pdcpDlTxKbits =
+            static_cast<double>(pdcpDlTxBytes) *
+            8.0 /
+            1e3;
+
+        const double pdcpDlRxKbits =
+            static_cast<double>(pdcpDlRxBytes) *
+            8.0 /
+            1e3;
+
+        const double pdcpUlTxKbits =
+            static_cast<double>(pdcpUlTxBytes) *
+            8.0 /
+            1e3;
+
+        const double rlcDlTxKbits =
+            static_cast<double>(rlcDlTxBytes) *
+            8.0 /
+            1e3;
+
+        cellDlTxVolume += pdcpDlTxKbits;
+        cellDlRxVolume += pdcpDlRxKbits;
+
+        const auto rnti = ue->GetRnti();
+
+        long txPdcpPduNrRlc =
+            static_cast<long>(m_txPDU[rnti]);
+
+        double txPdcpPduBytesNrRlc =
+            static_cast<double>(m_txPDUBytes[rnti]) *
+            8.0 /
+            1e3;
+
         m_txPDU[rnti] = 0;
         m_txPDUBytes[rnti] = 0;
 
-        NS_LOG_DEBUG("Number of Tx PDCP PDU in NR RLC: " << txPdcpPduNrRlc
-                                                         << ", in bytes: " << txPdcpPduBytesNrRlc);
-        // Use kbit instead of byte
-        txPdcpPduBytesNrRlc *= 8 / 1e3;
+        NS_LOG_DEBUG(
+            "Number of Tx PDCP PDU in NR RLC: "
+                << txPdcpPduNrRlc
+                << ", in kbits: "
+                << txPdcpPduBytesNrRlc);
 
-        // compute mean latency based on PDCP statistics
-        /** TODO: Actually, it returns the average latency and i don't know how to reset it */
-        [[maybe_unused]] auto stats = m_e2PdcpStatsCalculator->GetDlDelayStats(imsi, 4);
-        double pdcpLatency = m_e2PdcpStatsCalculator->GetDlDelay(imsi, 4) / 1e5; // unit: x 0.1 ms
-        perUserAverageLatencySum += pdcpLatency;
+        NS_ABORT_MSG_IF(
+            m_e2Periodicity <= 0.0,
+            "E2 reporting periodicity must be positive");
 
-        double pdcpThroughput = txBytes / m_e2Periodicity;                    // unit kbps
-        std::cout << "imsi: " << imsi <<" -> " << pdcpThroughput << " kbps" << std::endl;
+        const double pdcpThroughput =
+            pdcpDlTxKbits /
+            m_e2Periodicity;
 
-        [[maybe_unused]] double pdcpThroughputRx = rxBytes / m_e2Periodicity; // unit kbps
+        const double pdcpThroughputRx =
+            pdcpDlRxKbits /
+            m_e2Periodicity;
 
-        if (m_drbThrDlPdcpBasedComputationUeid.find(imsi) !=
-            m_drbThrDlPdcpBasedComputationUeid.end())
-        {
-            m_drbThrDlPdcpBasedComputationUeid.at(imsi) += pdcpThroughputRx;
-        }
-        else
-        {
-            m_drbThrDlPdcpBasedComputationUeid[imsi] = pdcpThroughputRx;
-        }
+        const double pdcpUlThroughput =
+            pdcpUlTxKbits /
+            m_e2Periodicity;
 
-        // compute bitrate based on RLC statistics, decoupled from pdcp throughput
-        double rlcLatency = m_e2RlcStatsCalculator->GetDlDelay(imsi, 4) / 1e9; // unit: s
-        double pduStats =
-            m_e2RlcStatsCalculator->GetDlPduSizeStats(imsi, 4)[0] * 8.0 / 1e3; // unit kbit
+        const double rlcBitrate =
+            rlcDlTxKbits /
+            m_e2Periodicity;
 
-        double rlcBitrate = (rlcLatency == 0) ? 0 : pduStats / rlcLatency; // unit kbit/s
+        m_drbThrDlPdcpBasedComputationUeid[imsi] =
+            pdcpThroughput;
 
-        m_drbThrDlUeid[imsi] = rlcBitrate;
+        m_drbThrUlPdcpBasedComputationUeid[imsi] =
+            pdcpUlThroughput;
+
+        m_drbThrDlUeid[imsi] =
+            rlcBitrate;
 
         NS_LOG_DEBUG("[" << Simulator::Now().GetSeconds() << "s]"
-                         << "Cell id: " << m_cellId << " connected UE with IMSI " << imsi
-                         << " ueImsiString " << ueImsiComplete << " txDlPackets " << txDlPackets
-                         << " txDlPacketsNr " << txPdcpPduNrRlc << " txBytes " << txBytes
-                         << " rxBytes " << rxBytes << " txDlBytesNr " << txPdcpPduBytesNrRlc
-                         << " pdcpLatency " << pdcpLatency << " pdcpThroughput " << pdcpThroughput
+                         << " Cell id: " << m_cellId
+                         << " connected UE with IMSI " << imsi
+                         << " ueImsiString " << ueImsiComplete
+                         << " txDlPackets " << txDlPackets
+                         << " txDlPacketsNr " << txPdcpPduNrRlc
+                         << " pdcpDlTxKbits " << pdcpDlTxKbits
+                         << " pdcpDlRxKbits " << pdcpDlRxKbits
+                         << " legacyCallbackTxKbits "
+                         << txPdcpPduBytesNrRlc
+                         << " rlcDlTxKbits " << rlcDlTxKbits
+                         << " pdcpThroughputTx " << pdcpThroughput
+                         << " pdcpThroughputRx " << pdcpThroughputRx
+                         << " pdcpThroughputUl " << pdcpUlThroughput
                          << " rlcBitrate " << rlcBitrate);
 
         if (!indicationMessageHelper->IsOffline())
@@ -1806,6 +2007,12 @@ E2Interface::BuildRicIndicationMessageDu(std::string plmId, uint16_t nrCellId)
         double drbThrDlUeid =
             m_drbThrDlUeid.find(imsi) != m_drbThrDlUeid.end() ? m_drbThrDlUeid.at(imsi) : 0;
 
+        const double drbThrUlPdcpBasedUeid =
+            m_drbThrUlPdcpBasedComputationUeid.find(imsi) !=
+                    m_drbThrUlPdcpBasedComputationUeid.end()
+                ? m_drbThrUlPdcpBasedComputationUeid.at(imsi)
+                : 0.0;
+
         indicationMessageHelper->AddDuUePmItem(ueImsiComplete,
                                macPduUe,
                                macPduInitialUe,
@@ -1848,12 +2055,17 @@ E2Interface::BuildRicIndicationMessageDu(std::string plmId, uint16_t nrCellId)
                 std::to_string(drbThrDlUeid) + ',' + std::to_string(drbThrDlPdcpBasedUeid)));
 
         // ML Slice Interface
-        MLSliceInterface(macPrb, imsi);
+        MLSliceInterface(
+            macPrb,
+            imsi,
+            drbThrDlPdcpBasedUeid,
+            drbThrUlPdcpBasedUeid);
         // reset UE
         m_e2DuCalculator->ResetPhyTracesForRntiCellId(rnti, m_cellId);
     }
 
     m_drbThrDlPdcpBasedComputationUeid.clear();
+    m_drbThrUlPdcpBasedComputationUeid.clear();
     m_drbThrDlUeid.clear();
 
     // Sum the UE-average PRB allocations derived from the
@@ -2066,9 +2278,17 @@ E2Interface ::BuildRicIndicationHeader(std::string plmId, std::string gnbId, uin
 }
 
 void
-E2Interface::MLSliceInterface(double macPrb, uint64_t imsi)
+E2Interface::MLSliceInterface(double macPrb,
+                              uint64_t imsi,
+                              double dlThroughput,
+                              double ulThroughput)
 {
-    NS_LOG_FUNCTION(this);
+    NS_LOG_FUNCTION(
+        this
+        << macPrb
+        << imsi
+        << dlThroughput
+        << ulThroughput);
 
     std::ofstream csv;
     std::string fileName = "ml_slice_interface.csv";
@@ -2085,16 +2305,6 @@ E2Interface::MLSliceInterface(double macPrb, uint64_t imsi)
         csv << "timestamp,imsi,dlThroughput,ulThroughput,spectralEfficiency\n";
     }
 
-    double currentTime = Simulator::Now().GetMilliSeconds();
-    double deltatime = currentTime - m_previousTime[imsi];
-
-    double currentDlTxData = m_e2PdcpStatsCalculator->GetDlTxData(imsi, 4);
-    double dlThroughput = (currentDlTxData - m_previousDlTxData[imsi]) * 8 / deltatime;
-    m_previousDlTxData[imsi] = currentDlTxData;
-    double currentUlTxData = m_e2PdcpStatsCalculator->GetUlTxData(imsi, 4);
-    double ulThroughput = (currentUlTxData - m_previousUlTxData[imsi]) * 8 / deltatime;
-    m_previousUlTxData[imsi] = currentUlTxData;
-    m_previousTime[imsi] = currentTime;
     double spectralEfficiency = 0.0;
     if (m_e2DuCalculator)
     {
